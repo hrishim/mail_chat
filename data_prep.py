@@ -33,7 +33,7 @@ class Message:
             f"Subject: {self.subject}\n"
             f"Date: {self.date}\n"
             f"x_gmail_labels: {self.x_gmail_labels}\n"
-            f"x_gm_thrid: {self.x_gm_thrid}\n"
+            #f"x_gm_thrid: {self.x_gm_thrid}\n"
             f"inReplyTo: {self.inReplyTo}\n"
             f"References: {self.references}"
         )
