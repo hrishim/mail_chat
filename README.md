@@ -2,11 +2,20 @@
 Chat with your Email - A Privacy-Focused Local Email Assistant
 
 ## Introduction
-`mail_chat` is a privacy-focused tool that enables you to have interactive conversations with your email archive while keeping your data completely local. It uses NVIDIA's Inference Microservices (NIM) to run Meta's Llama 3 8B Instruct model (`nvcr.io/nim/meta/llama3-8b-instruct:1.0.0`) locally for inference, ensuring your email content never leaves your machine.
+`mail_chat` is a privacy-focused tool that enables you to have interactive conversations with your email archive while keeping your data completely local. It uses NVIDIA's Inference Microservices (NIM) to run both the Llama 3 8B Instruct model and NV-Embed-QA model locally for inference and embeddings generation. Your email data never leaves your machine at any point during processing or querying.
+
+### Privacy & Security
+- **Completely Local Processing**: All components (LLM, embeddings, vector store) run locally
+- **No External Services**: The RAG pipeline is entirely self-contained on your machine
+- **Local Email Processing**: All email content is processed and stored locally
+- **Local LLM Inference**: Chat interactions use local Llama 3 model inference
+- **Local Embeddings**: Uses NVIDIA's NV-Embed-QA model running in a local container for generating embeddings
+- **Secure Storage**: Embeddings are stored locally in a FAISS vector database
+- **API Security**: Uses environment variables and `.env` files for secure credential management
 
 ### Key Features
 - **Privacy First**: All email processing and conversations happen locally on your machine
-- **Local LLM Integration**: Uses NVIDIA NIM to run Llama 3 8B locally
+- **Local LLM Integration**: Uses NVIDIA NIM to run Llama 3 8B and NV-Embed-QA models locally
 - **Efficient Processing**: Processes email archives (mbox format) into optimized vector embeddings
 - **Secure Credential Management**: Uses environment variables for secure API key handling
 - **Modern Architecture**: Uses LangChain's modular design with components from `langchain_core` and `langchain_community`
@@ -15,16 +24,17 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 
 ### Prerequisites
 1. **NVIDIA GPU**: A CUDA-capable NVIDIA GPU with sufficient VRAM (minimum 16GB recommended)
-2. **Docker with NVIDIA Container Runtime**: Required for running the NIM container
+2. **Docker with NVIDIA Container Runtime**: Required for running the NIM containers
 3. **Python 3.10+**: Required for running the application
 4. **NVIDIA Driver**: Latest NVIDIA driver compatible with CUDA
-5. **Storage**: At least 20GB free disk space for the model and container
+5. **Storage**: At least 20GB free disk space for the models and containers
+6. **Internet Connection**: Required only for initial container downloads and NGC authentication
 
 ### Dependencies
 This project uses several key dependencies:
 - **LangChain Core**: Core abstractions and interfaces
 - **LangChain Community**: Community-maintained integrations including FAISS vector store
-- **NVIDIA AI Endpoints**: For NV-Embed-QA model access
+- **NVIDIA AI Endpoints**: For running NV-Embed-QA model locally through NIM
 - **FAISS-CPU**: For efficient vector storage and retrieval
 - **Python-Magic**: For file type detection
 - **Python-Dotenv**: For secure environment variable management
@@ -111,14 +121,26 @@ All dependencies are specified in `requirements.txt` with their correct versions
 
 ## Data Preparation
 
-### Export Your Email
-1. Export your email archive in mbox format
-   - For Gmail:
-     1. Go to [Google Takeout](https://takeout.google.com/)
-     2. Select "Mail"
-     3. Choose "mbox format"
-     4. Download your archive
-   - Save the mbox file in your project directory
+### Export Your Gmail Data
+1. Go to [Google Takeout](https://takeout.google.com/)
+2. **Deselect All** products first by clicking "Deselect all" at the top
+3. Scroll down and find "Mail" in the list
+4. Click the checkbox next to "Mail" to select only your email data
+5. Click "Multiple formats" next to Mail
+6. Change the export format to "MBOX" format
+7. Click "Next step"
+8. Configure your export:
+   - Choose "Export once"
+   - Choose your preferred file size (we recommend "2GB" for easier handling)
+   - Choose your preferred delivery method (we recommend "Download link via email")
+9. Click "Create export"
+10. Wait for the email from Google (usually takes a few minutes to hours depending on size)
+11. Download your archive when ready
+12. Extract the downloaded archive
+13. Look for the file named `All mail Including Spam and Trash.mbox`
+    - This contains all your emails, including those in Spam and Trash
+    - If you don't want these, you can export specific labels instead in step 5
+14. Move or copy this file to your project directory
 
 ### Process Your Email Archive
 Make sure your virtual environment is active, then run the data preparation script:
@@ -139,8 +161,10 @@ Optional arguments:
 The script will:
 1. Load and parse your email archive
 2. Process emails into meaningful chunks
-3. Create embeddings using NVIDIA's NV-Embed-QA model
+3. Create embeddings using NVIDIA's NV-Embed-QA model running locally through NIM
 4. Store the embeddings in a local FAISS vector database
 
+All processing happens locally on your machine. No email content or embeddings are ever sent to external services.
+
 ## Next Steps
-After processing your email archive, you'll be ready to start chatting with your emails using the local Llama 3 model. Stay tuned for instructions on setting up the RAG pipeline and interactive chat interface.
+After processing your email archive, you'll be ready to start chatting with your emails using the local Llama 3 model. Stay tuned for instructions on setting up the RAG pipeline and interactive chat interface. The entire RAG pipeline runs locally, ensuring your email conversations remain private.
