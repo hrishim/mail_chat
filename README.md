@@ -27,14 +27,27 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
    cd mail_chat
    ```
 
-2. **Create a Virtual Environment**
+2. **Create and Activate Virtual Environment**
    ```bash
+   # Create a new virtual environment
    python -m venv ~/.venv/nvidia_rag
+   
+   # Activate it (choose one based on your shell):
+   # For bash/zsh:
    source ~/.venv/nvidia_rag/bin/activate
+   # For fish:
+   source ~/.venv/nvidia_rag/bin/activate.fish
+   # For csh/tcsh:
+   source ~/.venv/nvidia_rag/bin/activate.csh
+   
+   # Verify you're using the correct Python
+   which python
+   # Should show: ~/.venv/nvidia_rag/bin/python
    ```
 
 3. **Install Dependencies**
    ```bash
+   # Make sure you're in the project directory and your virtual environment is active
    pip install -r requirements.txt
    ```
 
@@ -53,6 +66,9 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 
    **Method 1: Using Environment Variable**
    ```bash
+   # Make sure your virtual environment is active
+   source ~/.venv/nvidia_rag/bin/activate
+   
    # Set NGC API key in your environment
    export NGC_API_KEY='your-api-key-here'
    
@@ -65,6 +81,9 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 
    **Method 2: Using .env File**
    ```bash
+   # Make sure your virtual environment is active
+   source ~/.venv/nvidia_rag/bin/activate
+   
    # Create .env file
    echo "NGC_API_KEY=your-api-key-here" > .env
    
@@ -90,8 +109,12 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
    - Save the mbox file in your project directory
 
 ### Process Your Email Archive
-Run the data preparation script:
+Make sure your virtual environment is active, then run the data preparation script:
 ```bash
+# Activate virtual environment if not already active
+source ~/.venv/nvidia_rag/bin/activate
+
+# Run the script
 python data_prep.py path/to/your/email.mbox
 ```
 
