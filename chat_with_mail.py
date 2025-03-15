@@ -5,13 +5,17 @@ import time
 import gradio as gr
 import subprocess
 import requests
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.vectorstores import FAISS
-from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+from langchain_nvidia_ai_endpoints import ChatNVIDIA, NVIDIAEmbeddings
+from langchain.chains import ConversationalRetrievalChain, LLMChain
+from langchain.chains.conversational_retrieval.prompts import CONDENSE_QUESTION_PROMPT, QA_PROMPT
+from langchain.chains.question_answering import load_qa_chain
+from langchain.memory import ConversationBufferMemory
 
 # Load environment variables
 load_dotenv()
@@ -20,30 +24,58 @@ class EmailChatBot:
     def __init__(self, vectordb_path: str = "./mail_vectordb"):
         self.vectordb_path = Path(vectordb_path)
         self.chat_history: List[Dict[str, str]] = []
-        self.setup_environment()
+        self.llm_url = "http://0.0.0.0:8000/v1/completions"
+        self.container_status = "stopped"
         self.setup_components()
 
-    def setup_environment(self):
-        """Set up the NIM environment and start the LLM container if needed."""
-        # Create NIM cache directory if it doesn't exist
-        nim_cache = os.path.expanduser("~/.cache/nim")
-        os.makedirs(nim_cache, exist_ok=True)
-        os.chmod(nim_cache, 0o777)
+    @property
+    def container_name(self):
+        return "meta-llama3-8b-instruct"
 
-        # Check if container is running
-        result = subprocess.run(["docker", "ps", "-q", "-f", "name=meta-llama3-8b-instruct"], 
-                              capture_output=True, text=True)
-        
-        if not result.stdout.strip():
-            print("Starting LLM container...")
+    def get_container_status(self) -> str:
+        """Get the current status of the LLM container."""
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", f"name={self.container_name}", "--format", "{{.Status}}"],
+                capture_output=True,
+                text=True
+            )
+            if not result.stdout.strip():
+                return "stopped"
+            status = result.stdout.strip().lower()
+            if "up" in status:
+                # Check if it's still initializing
+                logs = subprocess.run(
+                    ["docker", "logs", self.container_name],
+                    capture_output=True,
+                    text=True
+                ).stdout
+                if "Uvicorn running on http://0.0.0.0:8000" in logs:
+                    return "ready"
+                return "starting"
+            return "stopped"
+        except:
+            return "unknown"
+
+    def start_container(self) -> str:
+        """Start the LLM container."""
+        try:
+            if self.get_container_status() != "stopped":
+                return "Container is already running"
+
+            # Create NIM cache directory if it doesn't exist
+            nim_cache = os.path.expanduser("~/.cache/nim")
+            os.makedirs(nim_cache, exist_ok=True)
+            os.chmod(nim_cache, 0o777)
+
             # First try to remove any stopped container with the same name
-            subprocess.run(["docker", "rm", "-f", "meta-llama3-8b-instruct"], 
+            subprocess.run(["docker", "rm", "-f", self.container_name], 
                          capture_output=True, text=True)
             
             # Login to NGC
             ngc_key = os.getenv('NGC_API_KEY')
             if not ngc_key:
-                raise ValueError("NGC_API_KEY environment variable not set")
+                return "NGC_API_KEY environment variable not set"
             
             subprocess.run(["docker", "login", "nvcr.io", 
                           "--username", "$oauthtoken", 
@@ -52,7 +84,7 @@ class EmailChatBot:
             # Start the container
             subprocess.run([
                 "docker", "run", "-d",
-                "--name", "meta-llama3-8b-instruct",
+                "--name", self.container_name,
                 "--gpus", "all",
                 "-e", f"NGC_API_KEY={ngc_key}",
                 "-v", f"{nim_cache}:/opt/nim/.cache",
@@ -64,48 +96,18 @@ class EmailChatBot:
                 "nvcr.io/nim/meta/llama3-8b-instruct:1.0.0"
             ], check=True)
             
-            print("Waiting for LLM container to initialize...")
-            self.wait_for_llm_ready()
-            print("LLM container is ready!")
+            return "Container starting..."
+        except Exception as e:
+            return f"Error starting container: {str(e)}"
 
-    def wait_for_llm_ready(self, timeout=600, check_interval=10):
-        """Wait for the LLM container to be fully initialized."""
-        start_time = time.time()
-        while True:
-            if time.time() - start_time > timeout:
-                raise TimeoutError("LLM container failed to initialize within timeout period")
-
-            # Check container logs for the ready message
-            logs = subprocess.run(
-                ["docker", "logs", "meta-llama3-8b-instruct"],
-                capture_output=True,
-                text=True
-            ).stdout
-
-            if "Uvicorn running on http://0.0.0.0:8000" in logs:
-                # Give it a few more seconds to fully initialize
-                time.sleep(5)
-                return True
-
-            # Test if the API is responsive
-            try:
-                response = requests.post(
-                    "http://0.0.0.0:8000/v1/completions",
-                    headers={"Content-Type": "application/json"},
-                    json={
-                        "model": "meta/llama3-8b-instruct",
-                        "prompt": "test",
-                        "max_tokens": 1
-                    },
-                    timeout=5
-                )
-                if response.status_code == 200:
-                    return True
-            except:
-                pass
-
-            print("Waiting for LLM to initialize...")
-            time.sleep(check_interval)
+    def stop_container(self) -> str:
+        """Stop the LLM container."""
+        try:
+            subprocess.run(["docker", "stop", self.container_name], check=True)
+            subprocess.run(["docker", "rm", self.container_name], check=True)
+            return "Container stopped"
+        except Exception as e:
+            return f"Error stopping container: {str(e)}"
 
     def setup_components(self):
         """Initialize the RAG components."""
@@ -123,13 +125,32 @@ class EmailChatBot:
         self.vectorstore = FAISS.load_local(
             self.vectordb_path.as_posix(),
             self.embeddings,
-            allow_dangerous_deserialization=True  # We trust our local vector store
+            allow_dangerous_deserialization=True
         )
 
-        # Initialize the LLM
-        self.llm_url = "http://0.0.0.0:8000/v1/completions"
+        # Initialize the conversational chain components
+        self.llm = ChatNVIDIA(
+            base_url="http://0.0.0.0:8000/v1",
+            model="meta/llama3-8b-instruct",
+            temperature=0.1,
+            max_tokens=1000,
+            top_p=1.0
+        )
+        
+        self.memory = ConversationBufferMemory(
+            memory_key="chat_history",
+            return_messages=True
+        )
+        
+        self.qa = ConversationalRetrievalChain.from_llm(
+            llm=self.llm,
+            retriever=self.vectorstore.as_retriever(),
+            chain_type="stuff",
+            memory=self.memory,
+            combine_docs_chain_kwargs={'prompt': QA_PROMPT},
+        )
 
-        # Create the RAG prompt
+        # Create the simple RAG prompt
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a helpful AI assistant that answers questions about the user's email history. 
             Use the following pieces of email content to answer the user's question. 
@@ -153,7 +174,7 @@ class EmailChatBot:
                     "prompt": prompt,
                     "max_tokens": max_tokens
                 },
-                timeout=30  # Add timeout
+                timeout=30
             )
             print(f"Response status code: {response.status_code}")
             response.raise_for_status()
@@ -188,8 +209,8 @@ class EmailChatBot:
         docs = self.vectorstore.similarity_search(query, k=k)
         return "\n\n".join(doc.page_content for doc in docs)
 
-    def chat(self, message: str) -> str:
-        """Process a chat message and return the response."""
+    def chat_simple(self, message: str) -> str:
+        """Process a chat message using the simple RAG approach."""
         try:
             # Get relevant context
             print("Getting relevant context...")
@@ -222,9 +243,28 @@ class EmailChatBot:
             print(f"Traceback: {traceback.format_exc()}")
             return "I apologize, but I encountered an error while processing your request."
 
+    def chat_chain(self, message: str) -> str:
+        """Process a chat message using the ConversationalRetrievalChain."""
+        try:
+            result = self.qa({"question": message})
+            response = result.get("answer", "I apologize, but I couldn't generate a response.")
+            
+            # Update chat history
+            self.chat_history.append({"role": "user", "content": message})
+            self.chat_history.append({"role": "assistant", "content": response})
+            
+            return response
+        except Exception as e:
+            print(f"Error in chat_chain: {str(e)}")
+            print(f"Error type: {type(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            return "I apologize, but I encountered an error while processing your request."
+
     def clear_history(self) -> None:
         """Clear the chat history."""
         self.chat_history = []
+        self.memory.clear()
         return "Chat history cleared."
 
 def create_chat_interface():
@@ -236,7 +276,28 @@ def create_chat_interface():
     with gr.Blocks(title="Email Chat Assistant") as interface:
         gr.Markdown("# Email Chat Assistant\nChat with your email history using AI")
         
-        chatbot = gr.Chatbot(height=600)
+        with gr.Row():
+            with gr.Column(scale=2):
+                container_status = gr.Textbox(
+                    label="LLM Container Status",
+                    value=bot.get_container_status(),
+                    interactive=False
+                )
+            with gr.Column(scale=1):
+                start_btn = gr.Button("Start LLM", variant="primary")
+                stop_btn = gr.Button("Stop LLM", variant="secondary")
+                refresh_status = gr.Button("Refresh Status", variant="secondary")
+        
+        retrieval_method = gr.Radio(
+            choices=["Simple RAG", "Conversational Chain"],
+            value="Simple RAG",
+            label="Retrieval Method"
+        )
+        
+        chatbot = gr.Chatbot(
+            height=600,
+            type="messages"  # Use the new message format
+        )
         msg = gr.Textbox(
             label="Type your message here",
             placeholder="e.g., 'Did I travel to the US in 2023? What dates did I travel?'",
@@ -247,19 +308,42 @@ def create_chat_interface():
             submit = gr.Button("Send", variant="primary")
             clear = gr.Button("Clear History")
         
-        def respond(message, history):
-            bot_response = bot.chat(message)
-            history.append((message, bot_response))
+        def update_status():
+            return bot.get_container_status()
+        
+        def start_llm():
+            result = bot.start_container()
+            return result, update_status()
+        
+        def stop_llm():
+            result = bot.stop_container()
+            return result, update_status()
+        
+        def respond(message, history, method):
+            status = bot.get_container_status()
+            if status != "ready":
+                return "", history + [{"role": "assistant", "content": f"Please wait for the LLM container to be ready before sending messages. Current status: {status}"}]
+            
+            if method == "Simple RAG":
+                bot_response = bot.chat_simple(message)
+            else:
+                bot_response = bot.chat_chain(message)
+            
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": bot_response})
             return "", history
         
         def clear_chat_history():
             bot.clear_history()
             return None
         
-        submit.click(respond, [msg, chatbot], [msg, chatbot])
+        # Set up event handlers
+        start_btn.click(start_llm, outputs=[container_status, container_status])
+        stop_btn.click(stop_llm, outputs=[container_status, container_status])
+        refresh_status.click(update_status, outputs=container_status)
+        submit.click(respond, [msg, chatbot, retrieval_method], [msg, chatbot])
         clear.click(clear_chat_history, None, chatbot)
-        
-        msg.submit(respond, [msg, chatbot], [msg, chatbot])
+        msg.submit(respond, [msg, chatbot, retrieval_method], [msg, chatbot])
     
     # Launch the interface
     interface.launch(server_name="0.0.0.0", share=False)
