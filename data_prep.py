@@ -11,6 +11,9 @@ from typing import Union, Optional, Generator
 from mailbox import mboxMessage
 from datetime import datetime
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.vectorstores import FAISS
+from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+from langchain import Document
 
 class Message:
     def __init__(self, to: str, sender:str, subject: str, date: str, 
@@ -155,14 +158,44 @@ def load_mbox_in_chunks(file_path: Union[str, os.PathLike], chunk_size: int) -> 
     if messages:
         yield messages
 
-def chunk_messages(messages: list[Message], chunk_size: int = 1000, chunk_overlap: int = 200) -> list[str]:
-    """Chunks the messages using langchain.text_splitter."""
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, 
-                                                   chunk_overlap=chunk_overlap, 
-                                                   length_function=len,) 
-    all_text = "\n\n".join(str(msg) for msg in messages)
-    chunks = text_splitter.split_text(all_text)
-    return chunks
+def chunk_thread_messages(thread_messages: list[Message], chunk_size: int = 400, chunk_overlap: int = 100) -> list[Document]:
+    """Chunks messages from a single thread while maintaining conversation context.
+    
+    This function is optimized for RAG by keeping related messages together in chunks.
+    Messages in the same thread are concatenated with clear separators before chunking.
+    
+    Args:
+        thread_messages: List of messages in a thread, assumed to be sorted by date
+        chunk_size: Maximum size of each chunk
+        chunk_overlap: Number of characters to overlap between chunks
+        
+    Returns:
+        List of Document objects containing chunks with their metadata
+    """
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        length_function=len,
+        separators=["\n\nFrom:", "\nFrom:", "\n\n", "\n", " ", ""]
+    )
+    
+    # Join messages with clear separators
+    thread_text = ""
+    for i, msg in enumerate(thread_messages):
+        thread_text += str(msg)
+        if i < len(thread_messages) - 1:
+            thread_text += "\n\n---Next Message in Thread---\n\n"
+    
+    # Create metadata for the thread
+    metadata = {
+        'thread_start_date': thread_messages[0].date,
+        'thread_end_date': thread_messages[-1].date,
+        'num_messages': len(thread_messages),
+        'participants': list(set([msg.sender for msg in thread_messages] + [msg.to for msg in thread_messages]))
+    }
+    
+    # Create documents with metadata
+    return text_splitter.create_documents([thread_text], [metadata])
 
 def print_msg_keys(file_path: os.PathLike) -> None:
     mbox = mailbox.mbox(file_path)
@@ -196,14 +229,14 @@ def print_messages(file_path: Union[str, os.PathLike]) -> None:
 
 
 def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
-
+    """Organize messages by thread ID."""
     org_msgs: dict[str, list[Message]] = {}
 
     for msg in messages:
         if msg.x_gm_thrid is None:
             org_msgs['orphan'].append(msg)
         else:
-            org_msgs[msg.x_gm_thrid]
+            org_msgs[msg.x_gm_thrid] = org_msgs.get(msg.x_gm_thrid, []) + [msg]
     # Sorting each list in the dictionary by the 'date' field
     for key, messages in org_msgs.items():
         org_msgs[key] = sorted(messages, key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
@@ -222,45 +255,170 @@ def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
 
 
 # Example usage with partial loading
-file_path = "AllMailIncludingSpamAndTrash.mbox"
-chunk_size = 100  # Adjust the chunk size as needed
-
-for message_chunk in load_mbox_in_chunks(file_path, chunk_size):
-    chunks = chunk_messages(message_chunk, chunk_size=1000, chunk_overlap=200)
-    for chunk in chunks:
-        print(chunk)
-        print("--------")
-    print("**************************************")
-
-
-
-#### Notes ####
+#file_path = "AllMailIncludingSpamAndTrash.mbox"
+#chunk_size = 100  # Adjust the chunk size as needed
+#
+#for message_chunk in load_mbox_in_chunks(file_path, chunk_size):
+    #chunks = chunk_messages(message_chunk, chunk_size=1000, chunk_overlap=200)
+    #for chunk in chunks:
+        #print(chunk)
+        #print("--------")
+    #print("**************************************")
 
 
-# docker login nvcr.io --username '$oauthtoken' --password "${NGC_API_KEY}"
+def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], chunk_size: int = 100) -> Generator[dict[str, list[Message]], None, None]:
+    """Loads messages from mbox in chunks and organizes them by thread.
+    Uses a buffer to accumulate messages from the same thread before yielding.
+    
+    Args:
+        file_path: Path to the mbox file
+        chunk_size: Number of threads to accumulate before yielding
+        
+    Yields:
+        Dictionary mapping thread IDs to lists of messages in that thread
+    """
+    mbox = mailbox.mbox(file_path)
+    thread_buffer: dict[str, list[Message]] = {}
+    orphan_messages: list[Message] = []
+    threads_processed = 0
 
-# export LOCAL_NIM_CACHE=~/.cache/nim
-# mkdir -p "$LOCAL_NIM_CACHE"
-# chmod 777 "$LOCAL_NIM_CACHE"
+    def safe_strip(s: str) -> str:
+        return s.strip("\r") if s is not None else ""
 
-# docker run -d --name meta-llama3-8b-instruct --gpus all -e NGC_API_KEY -v "$LOCAL_NIM_CACHE:/opt/nim/.cache" -u $(id -u) -p 8000:8000 nvcr.io/nim/meta/llama3-8b-instruct:1.0.0
+    for message in mbox:
+        # Extract message data (reusing code from load_mbox)
+        sender = safe_strip(message['From'])
+        to = safe_strip(message['To'])
+        subject = safe_strip(message['Subject'])
+        date = message['Date']
+        xgmThrid = safe_strip(message['X-GM-THRID'])
+        igt = message.get('In-Reply-To')
+        inReplyTo = safe_strip(igt) if igt else ""
+        refs = message.get("References")
+        references = refs.split() if refs else []
+        labels = message.get("X-Gmail-Labels")
+        x_gmail_labels = labels.split(',') if labels else []
 
-# curl -X 'POST' \
-#    "http://0.0.0.0:8000/v1/completions" \
-#    -H "accept: application/json" \
-#    -H "Content-Type: application/json" \
-#    -d '{"model": "meta/llama3-8b-instruct", "prompt": "Once upon a time", "max_tokens": 64}'
+        # Extract content
+        content = extract_content(message)
+        content = clean_content(content)
+        
+        # Create Message object
+        msg_obj = Message(to=to, sender=sender, subject=subject, date=date, 
+                         content=content, x_gmail_labels=x_gmail_labels, 
+                         x_gm_thrid=xgmThrid, inReplyTo=inReplyTo, 
+                         references=references)
 
+        # Add message to appropriate thread in buffer
+        if xgmThrid:
+            if xgmThrid not in thread_buffer:
+                thread_buffer[xgmThrid] = []
+                threads_processed += 1
+            thread_buffer[xgmThrid].append(msg_obj)
+        else:
+            orphan_messages.append(msg_obj)
 
-# Embedding Model: NV-Embed-QA
-# LLM: meta-llama3-8b-instruct
+        # When we've accumulated enough threads, sort them by date and yield
+        if threads_processed >= chunk_size:
+            # Sort messages in each thread by date
+            for thread_messages in thread_buffer.values():
+                thread_messages.sort(key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
+            
+            # If we have orphan messages, add them as a special thread
+            if orphan_messages:
+                thread_buffer['orphan'] = sorted(orphan_messages, 
+                                               key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
+            
+            yield thread_buffer
+            
+            # Reset buffers
+            thread_buffer = {}
+            orphan_messages = []
+            threads_processed = 0
 
-# Other Models compatible with meta-llama3-8b-instruct
-# Multilingual-E5-Large: A general-purpose embedding model also used in RAG workflows 
-# Llama-Text-Embed-V2: Specifically designed to align with the LLaMA family of models, making it a natural fit for meta-llama3
-# Cohere Embed Models: Such as embed-english-v3 or embed-multilingual-v3, which provide high-quality embeddings for multilingual or English text
+    # Yield remaining messages
+    if thread_buffer or orphan_messages:
+        # Sort remaining threads
+        for thread_messages in thread_buffer.values():
+            thread_messages.sort(key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
+        
+        if orphan_messages:
+            thread_buffer['orphan'] = sorted(orphan_messages, 
+                                           key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
+        
+        yield thread_buffer
 
-# When selecting an embedding model:
-# - Ensure it supports your specific use case (e.g., query and passage embeddings).
-# - Check its compatibility with your deployment infrastructure (e.g., NVIDIA NIMs, Hugging Face, etc.).
-# - Test its alignment with meta-llama3-8b-instruct to ensure semantic coherence in retrieved results.
+def main():
+    """Process email threads from mbox file in memory-efficient chunks."""
+    parser = argparse.ArgumentParser(description='Process mbox file into threaded chunks for RAG.')
+    parser.add_argument('mbox_file', type=str, help='Path to the mbox file to process')
+    parser.add_argument('--chunk-size', type=int, default=50,
+                       help='Number of threads to process in each batch (default: 50)')
+    parser.add_argument('--text-chunk-size', type=int, default=400,
+                       help='Maximum size of each text chunk in characters (default: 400, recommended for NV-Embed-QA)')
+    parser.add_argument('--chunk-overlap', type=int, default=100,
+                       help='Number of characters to overlap between chunks (default: 100)')
+    parser.add_argument('--vectordb-dir', type=str, default='./mail_vectordb',
+                       help='Directory to store the vector database (default: ./mail_vectordb)')
+    
+    args = parser.parse_args()
+    
+    # Validate that the mbox file exists
+    if not exists(args.mbox_file):
+        print(f"Error: Mbox file '{args.mbox_file}' does not exist.")
+        sys.exit(1)
+    
+    # Create vector DB directory if it doesn't exist
+    vectordb_dir = Path(args.vectordb_dir)
+    vectordb_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize embeddings and vector store
+    embeddings = NVIDIAEmbeddings(model="NV-Embed-QA", truncate="END")
+    vectorstore = None
+    
+    try:
+        # Process emails in batches of threads
+        for thread_batch in load_and_organize_in_chunks(args.mbox_file, chunk_size=args.chunk_size):
+            print(f"\nProcessing new batch of up to {args.chunk_size} threads...")
+            
+            batch_documents = []
+            
+            for thread_id, messages in thread_batch.items():
+                # Create chunks that maintain thread context
+                documents = chunk_thread_messages(
+                    messages,
+                    chunk_size=args.text_chunk_size,
+                    chunk_overlap=args.chunk_overlap
+                )
+                
+                # Add thread_id to each document's metadata
+                for i, doc in enumerate(documents):
+                    doc.metadata['thread_id'] = thread_id
+                    doc.metadata['chunk_index'] = i
+                    doc.metadata['total_chunks'] = len(documents)
+                    batch_documents.append(doc)
+            
+            # Create or update vector store
+            if vectorstore is None:
+                vectorstore = FAISS.from_documents(
+                    documents=batch_documents,
+                    embedding=embeddings
+                )
+            else:
+                vectorstore.add_documents(batch_documents)
+            
+            # Save after each batch to prevent data loss
+            vectorstore.save_local(str(vectordb_dir))
+            print(f"Saved vector store with {len(batch_documents)} new chunks")
+                
+    except Exception as e:
+        print(f"Error processing mbox file: {e}")
+        if vectorstore is not None:
+            # Save what we have in case of error
+            vectorstore.save_local(str(vectordb_dir))
+        sys.exit(1)
+    
+    print(f"\nProcessing complete. Vector store saved to {vectordb_dir}")
+
+if __name__ == '__main__':
+    main()
