@@ -4,6 +4,8 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 ## Introduction
 `mail_chat` is a privacy-focused tool that enables you to have interactive conversations with your email archive while keeping your data completely local. It uses NVIDIA's Inference Microservices (NIM) to run both the Llama 3 8B Instruct model and NV-Embed-QA model locally for inference and embeddings generation. Your email data never leaves your machine at any point during processing or querying.
 
+Currently, the LLM model utilized in the RAG pipeline requires a GPU to operate. However, support for CPU-based models and a broader range of models in is under active development.
+
 **NOTE:** This project is still in *Beta* and has limitations and bugs. In my testing the Simple RAG is practically useless (it is my scaffolding to get better). Conversational Chain RAG is the one that works, but it is not as smooth as I would like it to be. Partly because of model size and partly because I am still learning how to build RAG pipelines.
 
 ### Privacy & Security
@@ -211,4 +213,83 @@ The script will:
 All processing happens locally on your machine. No email content or embeddings are ever sent to external services.
 
 ## Next Steps
-After processing your email archive, you'll be ready to start chatting with your emails using the local Llama 3 model. Stay tuned for instructions on setting up the RAG pipeline and interactive chat interface. The entire RAG pipeline runs locally, ensuring your email conversations remain private.
+After processing your email archive, you can start chatting with your emails using the local Llama 3 model.
+
+### Running the Chat Interface
+The chat interface provides two different RAG methods:
+1. **Simple RAG**: A basic implementation that retrieves relevant context and generates responses (Note: Currently in beta with limited effectiveness)
+2. **Conversational Chain**: An advanced implementation using LangChain's ConversationalRetrievalChain that maintains conversation context (Recommended method)
+
+To start the chat interface:
+```bash
+# Activate your virtual environment
+source ~/.venv/mymail_rag/bin/activate
+
+# Start the chat interface
+python chat_with_mail.py
+```
+
+The interface will be available at `http://0.0.0.0:7862` in your browser.
+
+### Using the Chat Interface
+1. **LLM Container Controls**:
+   - Click "Start LLM" to start the NIM container
+   - The status will show "starting" while the model is loading
+   - Wait for the status to show "ready" before sending messages
+   - Use "Refresh Status" to check the current state
+   - Click "Stop LLM" when you're done to free up GPU memory
+
+2. **Choosing a RAG Method**:
+   - Select "Simple RAG" for basic question-answering (Note: Currently in beta with limited effectiveness)
+   - Select "Conversational Chain" (recommended) for better context handling and more coherent responses
+   - You can switch between methods at any time
+   - Note: The Conversational Chain method:
+     - Maintains conversation history for better context understanding
+     - May require more memory and processing time
+     - Provides more coherent responses but may be slower
+     - Is still being optimized for better performance
+
+3. **Chatting with Your Emails**:
+   - Type your question in the text box
+   - Click "Send" or press Enter
+   - The response will appear in the chat history
+   - Use "Clear History" to start a new conversation
+
+### Example Questions
+Try asking questions like:
+- "What were the main topics I discussed with [person's name] in 2023?"
+- "Find emails about travel plans to Europe"
+- "Summarize my communication with [company name]"
+- "What was the outcome of the project discussion with [team name]?"
+
+### Troubleshooting
+1. **LLM Container Issues**:
+   - If the container is stuck in "starting", try stopping and starting it again
+   - Check docker logs: `docker logs meta-llama3-8b-instruct`
+   - Ensure you have enough GPU memory (24GB minimum)
+
+2. **Memory Issues**:
+   - If you see out-of-memory errors, try:
+     - Closing other GPU applications
+     - Reducing the chunk size in data preparation
+     - Processing a smaller email archive
+   - When using Conversational Chain:
+     - Memory usage increases with conversation length due to history tracking
+     - Use "Clear History" periodically to free up memory
+     - Consider switching to Simple RAG if handling very large email archives
+   - FAISS vector store from `langchain_community.vectorstores`:
+     - Loads all embeddings into RAM
+     - Memory usage scales with email archive size
+     - Consider reducing chunk size or archive size if RAM usage is too high
+
+3. **Common Errors**:
+   - "NGC_API_KEY not set": Check your .env file or environment variables
+   - "Container is not ready": Wait for the LLM to fully initialize
+   - "Connection refused": Ensure the container is running and ports are available
+
+4. **Package Import Issues**:
+   - "No module named 'langchain_core.documents'": Ensure you're using the correct modular package. Document handling is now in `langchain_core.documents`
+   - "No module named 'langchain_community.vectorstores'": FAISS and other vector stores are now in `langchain_community.vectorstores`
+   - "ImportError: cannot import name 'X' from 'langchain'": Most components have moved to modular packages. Check `requirements.txt` for correct package versions
+
+For more detailed error messages, check the terminal where you started the chat interface.
