@@ -21,3 +21,5 @@ var/
 *.egg
 .DS_Store
 mail_vectordb/
+junk.txt
+*.swp
