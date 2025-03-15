@@ -13,7 +13,7 @@ from datetime import datetime
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-from langchain import Document
+from langchain_core.documents import Document
 
 class Message:
     def __init__(self, to: str, sender:str, subject: str, date: str, 
