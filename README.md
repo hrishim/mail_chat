@@ -9,6 +9,7 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 - **Local LLM Integration**: Uses NVIDIA NIM to run Llama 3 8B locally
 - **Efficient Processing**: Processes email archives (mbox format) into optimized vector embeddings
 - **Secure Credential Management**: Uses environment variables for secure API key handling
+- **Modern Architecture**: Uses LangChain's modular design with components from `langchain_core` and `langchain_community`
 
 ## Installation
 
@@ -18,6 +19,17 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 3. **Python 3.10+**: Required for running the application
 4. **NVIDIA Driver**: Latest NVIDIA driver compatible with CUDA
 5. **Storage**: At least 20GB free disk space for the model and container
+
+### Dependencies
+This project uses several key dependencies:
+- **LangChain Core**: Core abstractions and interfaces
+- **LangChain Community**: Community-maintained integrations including FAISS vector store
+- **NVIDIA AI Endpoints**: For NV-Embed-QA model access
+- **FAISS-CPU**: For efficient vector storage and retrieval
+- **Python-Magic**: For file type detection
+- **Python-Dotenv**: For secure environment variable management
+
+All dependencies are specified in `requirements.txt` with their correct versions.
 
 ### Setup Instructions
 
