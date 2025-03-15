@@ -83,19 +83,19 @@ All dependencies are specified in `requirements.txt` with their correct versions
 2. **Create and Activate Virtual Environment**
    ```bash
    # Create a new virtual environment
-   python -m venv ~/.venv/nvidia_rag
+   python -m venv ~/.venv/mymail_rag
    
    # Activate it (choose one based on your shell):
    # For bash/zsh:
-   source ~/.venv/nvidia_rag/bin/activate
+   source ~/.venv/mymail_rag/bin/activate
    # For fish:
-   source ~/.venv/nvidia_rag/bin/activate.fish
+   source ~/.venv/mymail_rag/bin/activate.fish
    # For csh/tcsh:
-   source ~/.venv/nvidia_rag/bin/activate.csh
+   source ~/.venv/mymail_rag/bin/activate.csh
    
    # Verify you're using the correct Python
    which python
-   # Should show: ~/.venv/nvidia_rag/bin/python
+   # Should show: ~/.venv/mymail_rag/bin/python
    ```
 
 3. **Install Dependencies**
@@ -120,7 +120,7 @@ All dependencies are specified in `requirements.txt` with their correct versions
    **Method 1: Using Environment Variable**
    ```bash
    # Make sure your virtual environment is active
-   source ~/.venv/nvidia_rag/bin/activate
+   source ~/.venv/mymail_rag/bin/activate
    
    # Set NGC API key in your environment
    export NGC_API_KEY='your-api-key-here'
@@ -135,7 +135,7 @@ All dependencies are specified in `requirements.txt` with their correct versions
    **Method 2: Using .env File**
    ```bash
    # Make sure your virtual environment is active
-   source ~/.venv/nvidia_rag/bin/activate
+   source ~/.venv/mymail_rag/bin/activate
    
    # Create .env file
    echo "NGC_API_KEY=your-api-key-here" > .env
@@ -190,7 +190,7 @@ Before processing your email archive, consider these memory requirements:
 Make sure your virtual environment is active, then run the data preparation script:
 ```bash
 # Activate virtual environment if not already active
-source ~/.venv/nvidia_rag/bin/activate
+source ~/.venv/mymail_rag/bin/activate
 
 # Run the script
 python data_prep.py path/to/your/email.mbox
