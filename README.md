@@ -4,6 +4,8 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 ## Introduction
 `mail_chat` is a privacy-focused tool that enables you to have interactive conversations with your email archive while keeping your data completely local. It uses NVIDIA's Inference Microservices (NIM) to run both the Llama 3 8B Instruct model and NV-Embed-QA model locally for inference and embeddings generation. Your email data never leaves your machine at any point during processing or querying.
 
+**NOTE:** This project is still in *Beta* and has limitations and bugs. In my testing the Simple RAG is practically useless (it is my scaffolding to get better). Conversational Chain RAG is the one that works, but it is not as smooth as I would like it to be. Partly because of model size and partly because I am still learning how to build RAG pipelines.
+
 ### Privacy & Security
 - **Completely Local Processing**: All components (LLM, embeddings, vector store) run locally
 - **No External Services**: The RAG pipeline is entirely self-contained on your machine
