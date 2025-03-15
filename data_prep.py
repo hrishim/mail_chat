@@ -462,17 +462,17 @@ def main():
     parser.add_argument('--vectordb-dir', type=str, default='./mail_vectordb',
                        help='Directory to store the vector database (default: ./mail_vectordb)')
     parser.add_argument('--nvidia-api-key', type=str, default=None,
-                       help='NVIDIA AI Endpoints API key. Can also be set via NVIDIA_API_KEY environment variable.')
+                       help='NVIDIA AI Endpoints API key. Can also be set via NGC_API_KEY environment variable.')
     
     args = parser.parse_args()
     
     # Get NVIDIA API key from args or environment
-    api_key = args.nvidia_api_key or os.environ.get('NVIDIA_API_KEY')
+    api_key = args.nvidia_api_key or os.environ.get('NGC_API_KEY')
     if not api_key:
         print("Error: NVIDIA AI Endpoints API key is required.")
         print("You can provide it in one of two ways:")
-        print("1. Set the NVIDIA_API_KEY environment variable:")
-        print("   export NVIDIA_API_KEY='your-api-key'")
+        print("1. Set the NGC_API_KEY environment variable:")
+        print("   export NGC_API_KEY='your-api-key'")
         print("2. Pass it as a command line argument:")
         print("   python data_prep.py --nvidia-api-key 'your-api-key' ./AllMailIncludingSpamAndTrash.mbox")
         sys.exit(1)
@@ -491,7 +491,8 @@ def main():
         embeddings = NVIDIAEmbeddings(
             model="NV-Embed-QA",
             truncate="END",
-            nvidia_api_key=api_key
+            api_key=api_key,
+            api_url="https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions/e1c06c8d-f614-4af5-9e76-5f5d6d574e23"
         )
     except Exception as e:
         print(f"Error initializing NVIDIA AI Endpoints: {e}")
