@@ -92,6 +92,9 @@ def parse_email_date(date_str: str) -> str:
     Returns:
         Date string in format 'YYYY-MM-DD HH:MM:SS±HHMM'
     """
+    # Clean up the date string
+    date_str = date_str.split('(')[0].strip()  # Remove (UTC) or similar parenthetical
+    
     # Try various email date formats
     for fmt in [
         '%a, %d %b %Y %H:%M:%S %z',  # Standard email format: 'Sun, 09 Feb 2025 09:37:31 -0800'
@@ -105,6 +108,45 @@ def parse_email_date(date_str: str) -> str:
                 # If no timezone, assume UTC
                 return dt.strftime('%Y-%m-%d %H:%M:%S+0000')
             return dt.strftime('%Y-%m-%d %H:%M:%S%z')
+        except ValueError:
+            continue
+    
+    raise ValueError(f"Could not parse date string: {date_str}")
+
+def parse_date_for_sorting(date_str: str) -> datetime:
+    """Parse a date string into a datetime object for sorting.
+    
+    Handles both our standard format and email format dates.
+    
+    Args:
+        date_str: Date string in either format
+        
+    Returns:
+        datetime object
+    """
+    # Clean up the date string
+    date_str = date_str.split('(')[0].strip()  # Remove (UTC) or similar parenthetical
+    
+    # Try our standard format first
+    try:
+        return datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S%z')
+    except ValueError:
+        pass
+    
+    # If that fails, try email formats
+    for fmt in [
+        '%a, %d %b %Y %H:%M:%S %z',
+        '%d %b %Y %H:%M:%S %z',
+        '%a, %d %b %Y %H:%M:%S %Z',
+        '%a, %d %b %Y %H:%M:%S',
+    ]:
+        try:
+            dt = datetime.strptime(date_str, fmt)
+            if dt.tzinfo is None:
+                # If no timezone, assume UTC
+                from datetime import timezone
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
         except ValueError:
             continue
     
@@ -288,13 +330,17 @@ def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
     org_msgs: dict[str, list[Message]] = {}
 
     for msg in messages:
-        if msg.x_gm_thrid is None:
+        if not msg.x_gm_thrid:
+            if 'orphan' not in org_msgs:
+                org_msgs['orphan'] = []
             org_msgs['orphan'].append(msg)
         else:
             org_msgs[msg.x_gm_thrid] = org_msgs.get(msg.x_gm_thrid, []) + [msg]
+
     # Sorting each list in the dictionary by the 'date' field
-    for key, messages in org_msgs.items():
-        org_msgs[key] = sorted(messages, key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
+    for key, thread_messages in org_msgs.items():
+        org_msgs[key] = sorted(thread_messages, key=lambda msg: parse_date_for_sorting(msg.date))
+    
     return org_msgs
 
 #file_path = "AllMailIncludingSpamAndTrash.mbox"
@@ -377,12 +423,12 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], chunk_size: 
         if threads_processed >= chunk_size:
             # Sort messages in each thread by date
             for thread_messages in thread_buffer.values():
-                thread_messages.sort(key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
+                thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date))
             
             # If we have orphan messages, add them as a special thread
             if orphan_messages:
                 thread_buffer['orphan'] = sorted(orphan_messages, 
-                                               key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
+                                               key=lambda msg: parse_date_for_sorting(msg.date))
             
             yield thread_buffer
             
@@ -395,11 +441,11 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], chunk_size: 
     if thread_buffer or orphan_messages:
         # Sort remaining threads
         for thread_messages in thread_buffer.values():
-            thread_messages.sort(key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
+            thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date))
         
         if orphan_messages:
             thread_buffer['orphan'] = sorted(orphan_messages, 
-                                           key=lambda msg: datetime.strptime(msg.date, "%Y-%m-%d %H:%M:%S%z"))
+                                           key=lambda msg: parse_date_for_sorting(msg.date))
         
         yield thread_buffer
 
@@ -415,8 +461,21 @@ def main():
                        help='Number of characters to overlap between chunks (default: 100)')
     parser.add_argument('--vectordb-dir', type=str, default='./mail_vectordb',
                        help='Directory to store the vector database (default: ./mail_vectordb)')
+    parser.add_argument('--nvidia-api-key', type=str, default=None,
+                       help='NVIDIA AI Endpoints API key. Can also be set via NVIDIA_API_KEY environment variable.')
     
     args = parser.parse_args()
+    
+    # Get NVIDIA API key from args or environment
+    api_key = args.nvidia_api_key or os.environ.get('NVIDIA_API_KEY')
+    if not api_key:
+        print("Error: NVIDIA AI Endpoints API key is required.")
+        print("You can provide it in one of two ways:")
+        print("1. Set the NVIDIA_API_KEY environment variable:")
+        print("   export NVIDIA_API_KEY='your-api-key'")
+        print("2. Pass it as a command line argument:")
+        print("   python data_prep.py --nvidia-api-key 'your-api-key' ./AllMailIncludingSpamAndTrash.mbox")
+        sys.exit(1)
     
     # Validate that the mbox file exists
     if not exists(args.mbox_file):
@@ -428,7 +487,17 @@ def main():
     vectordb_dir.mkdir(parents=True, exist_ok=True)
     
     # Initialize embeddings and vector store
-    embeddings = NVIDIAEmbeddings(model="NV-Embed-QA", truncate="END")
+    try:
+        embeddings = NVIDIAEmbeddings(
+            model="NV-Embed-QA",
+            truncate="END",
+            nvidia_api_key=api_key
+        )
+    except Exception as e:
+        print(f"Error initializing NVIDIA AI Endpoints: {e}")
+        print("Please check your API key and try again.")
+        sys.exit(1)
+        
     vectorstore = None
     
     try:
