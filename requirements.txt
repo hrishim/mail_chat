@@ -10,3 +10,5 @@ numpy<2.0.0  # For FAISS compatibility
 faiss-cpu>=1.7.4
 python-magic>=0.4.27
 python-dotenv>=1.0.0
+gradio>=4.19.2
+requests>=2.31.0
