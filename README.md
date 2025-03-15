@@ -23,31 +23,47 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 ### Technical Architecture
 This project leverages LangChain's modern modular architecture:
 - **Core Components** (`langchain_core`):
-  - Document handling and metadata management via `langchain_core.documents`
+  - Document handling and metadata management via `langchain_core.documents` (required for vector store metadata)
   - Core abstractions and interfaces for RAG pipeline
 - **Community Components** (`langchain_community`):
   - Vector store implementation using FAISS from `langchain_community.vectorstores`
-  - Integration with NVIDIA AI Endpoints
+  - Efficient storage and retrieval of email embeddings
+  - Memory-efficient vector similarity search
+- **NVIDIA AI Integration**:
+  - Local model inference using NVIDIA NIM containers
+  - Integration with NVIDIA AI Endpoints (version 0.2.0+ required)
 - **Local Infrastructure**:
   - NVIDIA NIM containers for model inference
   - FAISS vector database for local storage
   - Environment-based configuration management
 
+**Note on Package Versions**: This project specifically uses:
+- `langchain_core.documents` for Document class and metadata handling
+- `langchain_community.vectorstores` for FAISS integration
+These are part of LangChain's modularization effort and require specific versions as listed in `requirements.txt`
+
 ## Installation
 
 ### Prerequisites
-1. **NVIDIA GPU**: A CUDA-capable NVIDIA GPU with sufficient VRAM (minimum 16GB recommended)
-2. **Docker with NVIDIA Container Runtime**: Required for running the NIM containers
-3. **Python 3.10+**: Required for running the application
-4. **NVIDIA Driver**: Latest NVIDIA driver compatible with CUDA
-5. **Storage**: At least 20GB free disk space for the models and containers
-6. **Internet Connection**: Required only for initial container downloads and NGC authentication
+1. **NVIDIA GPU**: Required specifications:
+   - **Minimum**: NVIDIA RTX 3090 (24GB VRAM) or equivalent
+   - **Recommended**: NVIDIA RTX 4090 (24GB VRAM) or better
+   - **Note**: Lower VRAM GPUs (e.g., RTX 3080, 3070) may not be able to run the NIM containers due to memory requirements of the Llama 3 8B model
+2. **System Memory**:
+   - **Minimum**: 32GB RAM
+   - **Recommended**: 64GB RAM
+   - **Note**: The FAISS vector store from `langchain_community.vectorstores` is loaded into memory, so RAM requirements increase with the size of your email archive
+3. **Docker with NVIDIA Container Runtime**: Required for running the NIM containers
+4. **Python 3.10+**: Required for running the application
+5. **NVIDIA Driver**: Latest NVIDIA driver compatible with CUDA
+6. **Storage**: At least 20GB free disk space for the models and containers
+7. **Internet Connection**: Required only for initial container downloads and NGC authentication
 
 ### Dependencies
 This project uses several key dependencies:
 - **LangChain Core**: Core abstractions and interfaces for RAG components
 - **LangChain Community**: Community-maintained integrations including FAISS vector store
-- **NVIDIA AI Endpoints**: For running NV-Embed-QA model locally through NIM
+- **NVIDIA AI Endpoints**: For running NV-Embed-QA model locally through NIM (version 0.2.0 or higher required)
 - **FAISS-CPU**: For efficient vector storage and retrieval
 - **Python-Magic**: For file type detection
 - **Python-Dotenv**: For secure environment variable management
@@ -133,6 +149,19 @@ All dependencies are specified in `requirements.txt` with their correct versions
    The `.env` file will be used by both the Docker authentication and our Python scripts.
 
 ## Data Preparation
+
+### Memory Usage Considerations
+Before processing your email archive, consider these memory requirements:
+- The FAISS vector store from `langchain_community.vectorstores` loads all embeddings into RAM
+- Each email chunk requires approximately 384 bytes for metadata and 1024 floating point numbers (4KB) for embeddings
+- As a rough estimate, each email thread might generate 2-3 chunks on average
+- Example calculation:
+  - For 10,000 email threads:
+    - ~25,000 chunks (assuming 2.5 chunks per thread)
+    - ~110MB for embeddings (25,000 * 4KB)
+    - ~10MB for metadata
+    - Additional memory overhead for FAISS indexing
+  - Recommend having at least 2-3x this amount in free RAM
 
 ### Export Your Gmail Data
 1. Go to [Google Takeout](https://takeout.google.com/)

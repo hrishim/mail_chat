@@ -1,11 +1,10 @@
 beautifulsoup4==4.13.3
-langchain-core==0.3.37
-langchain-text-splitters==0.3.6
+langchain-core>=0.3.37
+langchain-text-splitters>=0.3.6
 langchain-community>=0.0.16
+langchain-nvidia-ai-endpoints>=0.2.0  # Required for newer LangChain modular features
 soupsieve==2.6
 typing-extensions==4.12.2
-langchain>=0.1.0
-langchain-nvidia-ai-endpoints>=0.0.3
 numpy<2.0.0  # For FAISS compatibility
 faiss-cpu>=1.7.4
 python-magic>=0.4.27
