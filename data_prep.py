@@ -14,6 +14,10 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
 from langchain_core.documents import Document
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 class Message:
     def __init__(self, to: str, sender:str, subject: str, date: str, 
@@ -471,8 +475,8 @@ def main():
     if not api_key:
         print("Error: NVIDIA AI Endpoints API key is required.")
         print("You can provide it in one of two ways:")
-        print("1. Set the NGC_API_KEY environment variable:")
-        print("   export NGC_API_KEY='your-api-key'")
+        print("1. Set the NGC_API_KEY environment variable in .env file:")
+        print("   NGC_API_KEY='your-api-key'")
         print("2. Pass it as a command line argument:")
         print("   python data_prep.py --nvidia-api-key 'your-api-key' ./AllMailIncludingSpamAndTrash.mbox")
         sys.exit(1)
