@@ -9,13 +9,14 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 from langchain_community.vectorstores import FAISS
 from langchain_nvidia_ai_endpoints import ChatNVIDIA, NVIDIAEmbeddings
 from langchain.chains import ConversationalRetrievalChain, LLMChain
 from langchain.chains.conversational_retrieval.prompts import CONDENSE_QUESTION_PROMPT, QA_PROMPT
 from langchain.chains.question_answering import load_qa_chain
 from langchain.memory import ConversationBufferMemory
+import numpy as np
 
 # Load environment variables
 load_dotenv()
@@ -204,17 +205,41 @@ class EmailChatBot:
                 messages.append(AIMessage(content=msg["content"]))
         return messages
 
-    def get_relevant_context(self, query: str, k: int = 4) -> str:
+    def get_relevant_context(self, query: str, k: int = 4, use_rerank: bool = False) -> str:
         """Retrieve relevant email context for the query."""
-        docs = self.vectorstore.similarity_search(query, k=k)
+        if not use_rerank:
+            # Original method
+            docs = self.vectorstore.similarity_search(query, k=k)
+        else:
+            # Get more candidates for reranking
+            docs = self.vectorstore.similarity_search(query, k=k*3)
+            
+            # Compute query embedding once
+            query_embedding = self.embeddings.embed_query(query)
+            
+            # Score documents using cosine similarity
+            scores = []
+            for doc in docs:
+                # Embed the document content
+                doc_embedding = self.embeddings.embed_query(doc.page_content)
+                
+                # Compute cosine similarity
+                similarity = np.dot(query_embedding, doc_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
+                )
+                scores.append((similarity, doc))
+            
+            # Sort by scores and take top k
+            docs = [doc for _, doc in sorted(scores, reverse=True)[:k]]
+        
         return "\n\n".join(doc.page_content for doc in docs)
 
-    def chat_simple(self, message: str) -> str:
+    def chat_simple(self, message: str, use_rerank: bool = False) -> str:
         """Process a chat message using the simple RAG approach."""
         try:
             # Get relevant context
             print("Getting relevant context...")
-            context = self.get_relevant_context(message)
+            context = self.get_relevant_context(message, use_rerank=use_rerank)
             print(f"Found {len(context.split())} words of context")
             
             # Format the prompt with context and chat history
@@ -243,9 +268,40 @@ class EmailChatBot:
             print(f"Traceback: {traceback.format_exc()}")
             return "I apologize, but I encountered an error while processing your request."
 
-    def chat_chain(self, message: str) -> str:
+    def chat_chain(self, message: str, use_rerank: bool = False) -> str:
         """Process a chat message using the ConversationalRetrievalChain."""
         try:
+            if use_rerank:
+                # Create a custom retriever that uses reranking
+                retriever = self.vectorstore.as_retriever()
+                original_get_relevant_docs = retriever._get_relevant_documents
+                
+                def reranked_get_relevant_docs(*args, **kwargs):
+                    # Get more candidates
+                    docs = original_get_relevant_docs(*args, **kwargs)
+                    k = len(docs) // 3  # Get final k from original count
+                    
+                    # Compute query embedding once
+                    query_embedding = self.embeddings.embed_query(message)
+                    
+                    # Score documents using cosine similarity
+                    scores = []
+                    for doc in docs:
+                        # Embed the document content
+                        doc_embedding = self.embeddings.embed_query(doc.page_content)
+                        
+                        # Compute cosine similarity
+                        similarity = np.dot(query_embedding, doc_embedding) / (
+                            np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
+                        )
+                        scores.append((similarity, doc))
+                    
+                    # Return top k reranked docs
+                    return [doc for _, doc in sorted(scores, reverse=True)[:k]]
+                
+                retriever._get_relevant_documents = reranked_get_relevant_docs
+                self.qa.retriever = retriever
+            
             result = self.qa({"question": message})
             response = result.get("answer", "I apologize, but I couldn't generate a response.")
             
@@ -294,6 +350,8 @@ def create_chat_interface():
             label="Retrieval Method"
         )
         
+        use_rerank = gr.Checkbox(label="Use Reranking")
+        
         chatbot = gr.Chatbot(
             height=600,
             type="messages"  # Use the new message format
@@ -319,15 +377,15 @@ def create_chat_interface():
             result = bot.stop_container()
             return result, update_status()
         
-        def respond(message, history, method):
+        def respond(message, history, method, use_rerank):
             status = bot.get_container_status()
             if status != "ready":
                 return "", history + [{"role": "assistant", "content": f"Please wait for the LLM container to be ready before sending messages. Current status: {status}"}]
             
             if method == "Simple RAG":
-                bot_response = bot.chat_simple(message)
+                bot_response = bot.chat_simple(message, use_rerank=use_rerank)
             else:
-                bot_response = bot.chat_chain(message)
+                bot_response = bot.chat_chain(message, use_rerank=use_rerank)
             
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": bot_response})
@@ -341,9 +399,9 @@ def create_chat_interface():
         start_btn.click(start_llm, outputs=[container_status, container_status])
         stop_btn.click(stop_llm, outputs=[container_status, container_status])
         refresh_status.click(update_status, outputs=container_status)
-        submit.click(respond, [msg, chatbot, retrieval_method], [msg, chatbot])
+        submit.click(respond, [msg, chatbot, retrieval_method, use_rerank], [msg, chatbot])
         clear.click(clear_chat_history, None, chatbot)
-        msg.submit(respond, [msg, chatbot, retrieval_method], [msg, chatbot])
+        msg.submit(respond, [msg, chatbot, retrieval_method, use_rerank], [msg, chatbot])
     
     # Launch the interface
     interface.launch(server_name="0.0.0.0", share=False)
