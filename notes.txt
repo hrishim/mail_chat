@@ -1,0 +1,27 @@
+docker login nvcr.io --username '$oauthtoken' --password "${NGC_API_KEY}"
+
+export LOCAL_NIM_CACHE=~/.cache/nim
+mkdir -p "$LOCAL_NIM_CACHE"
+chmod 777 "$LOCAL_NIM_CACHE"
+
+docker run -d --name meta-llama3-8b-instruct --gpus all -e NGC_API_KEY -v "$LOCAL_NIM_CACHE:/opt/nim/.cache" -u $(id -u) -p 8000:8000 nvcr.io/nim/meta/llama3-8b-instruct:1.0.0
+
+curl -X 'POST' \
+   "http://0.0.0.0:8000/v1/completions" \
+   -H "accept: application/json" \
+   -H "Content-Type: application/json" \
+   -d '{"model": "meta/llama3-8b-instruct", "prompt": "Once upon a time", "max_tokens": 64}'
+
+
+Embedding Model: NV-Embed-QA
+LLM: meta-llama3-8b-instruct
+
+Other Models compatible with meta-llama3-8b-instruct
+Multilingual-E5-Large: A general-purpose embedding model also used in RAG workflows 
+Llama-Text-Embed-V2: Specifically designed to align with the LLaMA family of models, making it a natural fit for meta-llama3
+Cohere Embed Models: Such as embed-english-v3 or embed-multilingual-v3, which provide high-quality embeddings for multilingual or English text
+
+When selecting an embedding model:
+- Ensure it supports your specific use case (e.g., query and passage embeddings).
+- Check its compatibility with your deployment infrastructure (e.g., NVIDIA NIMs, Hugging Face, etc.).
+- Test its alignment with meta-llama3-8b-instruct to ensure semantic coherence in retrieved results. 
