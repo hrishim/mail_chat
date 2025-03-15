@@ -81,80 +81,135 @@ def clean_content(content: Optional[str]) -> str:
         return content.strip()
     return ""
 
+def parse_email_date(date_str: str) -> str:
+    """Parse email date string into a consistent format.
+    
+    Handles various email date formats and converts to our standard format.
+    
+    Args:
+        date_str: Date string from email header
+        
+    Returns:
+        Date string in format 'YYYY-MM-DD HH:MM:SS±HHMM'
+    """
+    # Try various email date formats
+    for fmt in [
+        '%a, %d %b %Y %H:%M:%S %z',  # Standard email format: 'Sun, 09 Feb 2025 09:37:31 -0800'
+        '%d %b %Y %H:%M:%S %z',      # Without weekday
+        '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
+        '%a, %d %b %Y %H:%M:%S',     # Without timezone
+    ]:
+        try:
+            dt = datetime.strptime(date_str, fmt)
+            if dt.tzinfo is None:
+                # If no timezone, assume UTC
+                return dt.strftime('%Y-%m-%d %H:%M:%S+0000')
+            return dt.strftime('%Y-%m-%d %H:%M:%S%z')
+        except ValueError:
+            continue
+    
+    raise ValueError(f"Could not parse date string: {date_str}")
+
 def load_mbox(file_path: Union[str, os.PathLike]) -> list[Message]:
     """Loads an mbox file and extracts messages."""
     mbox = mailbox.mbox(file_path)
     messages = []
-
-    def safe_strip(s: str) -> str:
-        return s.strip("\r") if s is not None else ""
     
-    for message in mbox:
-        sender = safe_strip(message['From'])
-        to = safe_strip(message['To'])
-        subject = safe_strip(message['Subject'])
-        date = message['Date']
-        xgmThrid = safe_strip(message['X-GM-THRID'])
-        igt = message.get('In-Reply-To')
-        inReplyTo = safe_strip(igt) if igt else ""
-        refs = message.get("References")
-        if refs != None:
-            references = refs.split()
-        else:
-            references = []
-        labels = message.get("X-Gmail-Labels")
-        x_gmail_labels: list[str] = labels.split(',') if labels else [] 
-
-        # Extract content
-        content = extract_content(message)
-        content = clean_content(content)
-        
-        # Create Message object
-        msg_obj = Message(to=to, sender=sender, subject=subject, date=date, 
-                          content=content, x_gmail_labels=x_gmail_labels, x_gm_thrid=xgmThrid,
-                          inReplyTo=inReplyTo, references=references)
-        messages.append(msg_obj)
+    for msg in mbox:
+        try:
+            content = extract_content(msg)
+            if content:
+                content = clean_content(content)
+                
+                # Get Gmail-specific headers
+                gmail_labels = msg.get('X-Gmail-Labels', '').split(',')
+                gmail_labels = [label.strip() for label in gmail_labels if label.strip()]
+                
+                thread_id = msg.get('X-GM-THRID')
+                in_reply_to = msg.get('In-Reply-To')
+                references = msg.get('References', '').split()
+                
+                # Parse and standardize the date
+                date_str = msg.get('Date')
+                if date_str:
+                    try:
+                        date = parse_email_date(date_str)
+                    except ValueError:
+                        print(f"Warning: Could not parse date '{date_str}', skipping message")
+                        continue
+                else:
+                    print("Warning: Message has no date, skipping")
+                    continue
+                
+                message = Message(
+                    to=msg.get('To', ''),
+                    sender=msg.get('From', ''),
+                    subject=msg.get('Subject', ''),
+                    date=date,
+                    content=content,
+                    x_gmail_labels=gmail_labels,
+                    x_gm_thrid=thread_id,
+                    inReplyTo=in_reply_to,
+                    references=references
+                )
+                messages.append(message)
+        except Exception as e:
+            print(f"Warning: Error processing message: {e}")
+            continue
     
     return messages
 
-def load_mbox_in_chunks(file_path: Union[str, os.PathLike], chunk_size: int) -> Generator[list[Message], None, None]:
+def load_mbox_in_chunks(file_path: Union[str, os.PathLike], chunk_size: int = 100) -> Generator[list[Message], None, None]:
     """Loads an mbox file and yields messages in chunks."""
     mbox = mailbox.mbox(file_path)
     messages = []
-
-    def safe_strip(s: str) -> str:
-        return s.strip("\r") if s is not None else ""
     
-    for i, message in enumerate(mbox):
-        sender = safe_strip(message['From'])
-        to = safe_strip(message['To'])
-        subject = safe_strip(message['Subject'])
-        date = message['Date']
-        xgmThrid = safe_strip(message['X-GM-THRID'])
-        igt = message.get('In-Reply-To')
-        inReplyTo = safe_strip(igt) if igt else ""
-        refs = message.get("References")
-        if refs != None:
-            references = refs.split()
-        else:
-            references = []
-        labels = message.get("X-Gmail-Labels")
-        x_gmail_labels: list[str] = labels.split(',') if labels else [] 
-
-        # Extract content
-        content = extract_content(message)
-        content = clean_content(content)
-        
-        # Create Message object
-        msg_obj = Message(to=to, sender=sender, subject=subject, date=date, 
-                          content=content, x_gmail_labels=x_gmail_labels, x_gm_thrid=xgmThrid,
-                          inReplyTo=inReplyTo, references=references)
-        messages.append(msg_obj)
-
-        if (i + 1) % chunk_size == 0:
-            yield messages
-            messages = []
-
+    for msg in mbox:
+        try:
+            content = extract_content(msg)
+            if content:
+                content = clean_content(content)
+                
+                # Get Gmail-specific headers
+                gmail_labels = msg.get('X-Gmail-Labels', '').split(',')
+                gmail_labels = [label.strip() for label in gmail_labels if label.strip()]
+                
+                thread_id = msg.get('X-GM-THRID')
+                in_reply_to = msg.get('In-Reply-To')
+                references = msg.get('References', '').split()
+                
+                # Parse and standardize the date
+                date_str = msg.get('Date')
+                if date_str:
+                    try:
+                        date = parse_email_date(date_str)
+                    except ValueError:
+                        print(f"Warning: Could not parse date '{date_str}', skipping message")
+                        continue
+                else:
+                    print("Warning: Message has no date, skipping")
+                    continue
+                
+                message = Message(
+                    to=msg.get('To', ''),
+                    sender=msg.get('From', ''),
+                    subject=msg.get('Subject', ''),
+                    date=date,
+                    content=content,
+                    x_gmail_labels=gmail_labels,
+                    x_gm_thrid=thread_id,
+                    inReplyTo=in_reply_to,
+                    references=references
+                )
+                messages.append(message)
+                
+                if len(messages) >= chunk_size:
+                    yield messages
+                    messages = []
+        except Exception as e:
+            print(f"Warning: Error processing message: {e}")
+            continue
+    
     if messages:
         yield messages
 
@@ -297,7 +352,7 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], chunk_size: 
         refs = message.get("References")
         references = refs.split() if refs else []
         labels = message.get("X-Gmail-Labels")
-        x_gmail_labels = labels.split(',') if labels else []
+        x_gmail_labels: list[str] = labels.split(',') if labels else [] 
 
         # Extract content
         content = extract_content(message)
