@@ -20,6 +20,19 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 - **Secure Credential Management**: Uses environment variables for secure API key handling
 - **Modern Architecture**: Uses LangChain's modular design with components from `langchain_core` and `langchain_community`
 
+### Technical Architecture
+This project leverages LangChain's modern modular architecture:
+- **Core Components** (`langchain_core`):
+  - Document handling and metadata management via `langchain_core.documents`
+  - Core abstractions and interfaces for RAG pipeline
+- **Community Components** (`langchain_community`):
+  - Vector store implementation using FAISS from `langchain_community.vectorstores`
+  - Integration with NVIDIA AI Endpoints
+- **Local Infrastructure**:
+  - NVIDIA NIM containers for model inference
+  - FAISS vector database for local storage
+  - Environment-based configuration management
+
 ## Installation
 
 ### Prerequisites
@@ -32,7 +45,7 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
 
 ### Dependencies
 This project uses several key dependencies:
-- **LangChain Core**: Core abstractions and interfaces
+- **LangChain Core**: Core abstractions and interfaces for RAG components
 - **LangChain Community**: Community-maintained integrations including FAISS vector store
 - **NVIDIA AI Endpoints**: For running NV-Embed-QA model locally through NIM
 - **FAISS-CPU**: For efficient vector storage and retrieval
