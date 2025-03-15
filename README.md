@@ -46,20 +46,37 @@ Chat with your Email - A Privacy-Focused Local Email Assistant
      3. Select "Generate API Key"
      4. Save your API key securely
    - For detailed instructions, visit the [NGC Getting Started Guide](https://docs.nvidia.com/ngc/gpu-cloud/ngc-overview/)
-   - Pull the Llama 3 model (will be done automatically when you first run the chat interface):
-     ```bash
-     docker pull nvcr.io/nim/meta/llama3-8b-instruct:1.0.0
-     ```
 
-5. **Environment Configuration**
-   - Create a `.env` file in the project root:
-     ```bash
-     touch .env
-     ```
-   - Add your NGC API key to the `.env` file:
-     ```
-     NGC_API_KEY=your-api-key-here
-     ```
+5. **NGC Authentication**
+   
+   Choose one of these two methods to authenticate:
+
+   **Method 1: Using Environment Variable**
+   ```bash
+   # Set NGC API key in your environment
+   export NGC_API_KEY='your-api-key-here'
+   
+   # Log in to NGC container registry
+   docker login nvcr.io --username '$oauthtoken' --password "${NGC_API_KEY}"
+   
+   # Pull the Llama 3 model
+   docker pull nvcr.io/nim/meta/llama3-8b-instruct:1.0.0
+   ```
+
+   **Method 2: Using .env File**
+   ```bash
+   # Create .env file
+   echo "NGC_API_KEY=your-api-key-here" > .env
+   
+   # Load the API key and log in to NGC
+   export NGC_API_KEY=$(grep NGC_API_KEY .env | cut -d '=' -f2)
+   docker login nvcr.io --username '$oauthtoken' --password "${NGC_API_KEY}"
+   
+   # Pull the Llama 3 model
+   docker pull nvcr.io/nim/meta/llama3-8b-instruct:1.0.0
+   ```
+
+   The `.env` file will be used by both the Docker authentication and our Python scripts.
 
 ## Data Preparation
 
