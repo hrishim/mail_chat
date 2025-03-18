@@ -2,27 +2,19 @@
 Chat with your Email - A Privacy-Focused Local Email Assistant
 
 ## Introduction
-`mail_chat` is a privacy-focused tool that enables you to have interactive conversations with your email archive while keeping your data completely local. It uses NVIDIA's Inference Microservices (NIM) to run both the Llama 3 8B Instruct model and NV-Embed-QA model locally for inference and embeddings generation. Your email data never leaves your machine at any point during processing or querying.
+`mail_chat` is a privacy-focused tool that enables you to have interactive conversations with your email archive while keeping your data completely local. It uses NVIDIA's Inference Microservices (NIM) to run both the **Llama 3 8B Instruct** model and NV-Embed-QA model locally for inference and embeddings generation. Your email data never leaves your machine at any point during processing or querying.
 
-Currently, the LLM model utilized in the RAG pipeline requires a GPU to operate. However, support for CPU-based models and a broader range of models in is under active development.
+Currently, the LLM model utilized in the RAG pipeline requires a GPU to operate. However, I hope to add support for CPU-based models and a broader range of models in the future. 
 
-**NOTE:** This project is still in *Beta* and has limitations and bugs. In my testing the Simple RAG is practically useless (it is my scaffolding to get better). Conversational Chain RAG is the one that works, but it is not as smooth as I would like it to be. Partly because of model size and partly because I am still learning how to build RAG pipelines.
-
-### Privacy & Security
-- **Completely Local Processing**: All components (LLM, embeddings, vector store) run locally
-- **No External Services**: The RAG pipeline is entirely self-contained on your machine
-- **Local Email Processing**: All email content is processed and stored locally
-- **Local LLM Inference**: Chat interactions use local Llama 3 model inference
-- **Local Embeddings**: Uses NVIDIA's NV-Embed-QA model running in a local container for generating embeddings
-- **Secure Storage**: Embeddings are stored locally in a FAISS vector database
-- **API Security**: Uses environment variables and `.env` files for secure credential management
+**NOTE:** This project is still in *Beta* and has limitations and bugs. The RAG is not as good as I would like it to be. Partly because of model size and partly because I am still learning how to build RAG pipelines.
 
 ### Key Features
-- **Privacy First**: All email processing and conversations happen locally on your machine
-- **Local LLM Integration**: Uses NVIDIA NIM to run Llama 3 8B and NV-Embed-QA models locally
-- **Efficient Processing**: Processes email archives (mbox format) into optimized vector embeddings
-- **Secure Credential Management**: Uses environment variables for secure API key handling
-- **Modern Architecture**: Uses LangChain's modular design with components from `langchain_core` and `langchain_community`
+- **LLM and RAG pipeline**: All components (LLM, embeddings, vector store) run locally
+- **Local Embeddings**: Uses NVIDIA's NV-Embed-QA model running in a local container for generating embeddings
+- **Local Embedding Storage**: Embeddings are stored locally in a FAISS vector database
+- **Local LLM Inference**: Chat interactions use local Llama 3 model inference
+- **No External Services**
+- **API Security**: NGC API required to use locally running NIM services. Uses environment variables and `.env` files for secure credential management
 
 ### Technical Architecture
 This project leverages LangChain's modern modular architecture:

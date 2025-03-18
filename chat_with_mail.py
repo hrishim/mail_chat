@@ -230,7 +230,7 @@ class EmailChatBot:
                 scores.append((similarity, doc))
             
             # Sort by scores and take top k
-            docs = [doc for _, doc in sorted(scores, reverse=True)[:k]]
+            docs = [doc for score, doc in sorted(scores, key=lambda x: x[0], reverse=True)[:k]]
         
         return "\n\n".join(doc.page_content for doc in docs)
 
