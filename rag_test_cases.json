@@ -1,0 +1,16 @@
+{
+    "test_cases": [
+        {
+            "query": "When did I send an email to Salvatore?",
+            "answer": "4 jan 2025."
+        },
+        {
+            "query": "Where does Robin van den Brink work?",
+            "answer": "polar.rs"
+        },
+        {
+            "query": "When did I join the Les Paul mailing list",
+            "answer": "30 nov 2012"
+        }
+    ]
+} 
