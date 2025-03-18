@@ -27,6 +27,7 @@ class EmailChatBot:
         self.chat_history: List[Dict[str, str]] = []
         self.llm_url = "http://0.0.0.0:8000/v1/completions"
         self.container_status = "stopped"
+        self.last_retrieved_docs = None  # Store last retrieved documents
         self.setup_components()
 
     @property
@@ -232,6 +233,8 @@ class EmailChatBot:
             # Sort by scores and take top k
             docs = [doc for score, doc in sorted(scores, key=lambda x: x[0], reverse=True)[:k]]
         
+        # Store the retrieved documents
+        self.last_retrieved_docs = docs
         return "\n\n".join(doc.page_content for doc in docs)
 
     def chat_simple(self, message: str, use_rerank: bool = False) -> str:
@@ -321,6 +324,7 @@ class EmailChatBot:
         """Clear the chat history."""
         self.chat_history = []
         self.memory.clear()
+        self.last_retrieved_docs = None
         return "Chat history cleared."
 
 def create_chat_interface():

@@ -25,3 +25,5 @@ When selecting an embedding model:
 - Ensure it supports your specific use case (e.g., query and passage embeddings).
 - Check its compatibility with your deployment infrastructure (e.g., NVIDIA NIMs, Hugging Face, etc.).
 - Test its alignment with meta-llama3-8b-instruct to ensure semantic coherence in retrieved results. 
+
+Evaluating RAG flows: https://medium.com/@zilliz_learn/optimizing-rag-applications-a-guide-to-methodologies-metrics-and-evaluation-tools-for-enhanced-a9ae3d9c7149
