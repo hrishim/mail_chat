@@ -143,21 +143,46 @@ class EmailChatBot:
             memory_key="chat_history",
             return_messages=True
         )
+
+        # Create a custom QA prompt with user identity
+        custom_qa_prompt = PromptTemplate(
+            template="""You are a helpful AI assistant that answers questions about the user's email history.
+            The user's name is Perf Opt and their email address is perfopt0@gmail.com.
+            When they ask questions using "I" or "me", it refers to Perf Opt (perfopt0@gmail.com).
+            
+            Use the following pieces of context to answer the question at the end.
+            If you don't know the answer, just say that you don't know, don't try to make up an answer.
+            Keep answers short and direct.
+            
+            Context: {context}
+            
+            Question: {question}
+            
+            Answer:""",
+            input_variables=["context", "question"]
+        )
         
         self.qa = ConversationalRetrievalChain.from_llm(
             llm=self.llm,
             retriever=self.vectorstore.as_retriever(),
             chain_type="stuff",
             memory=self.memory,
-            combine_docs_chain_kwargs={'prompt': QA_PROMPT},
+            combine_docs_chain_kwargs={'prompt': custom_qa_prompt},
         )
 
         # Create the simple RAG prompt
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a helpful AI assistant that answers questions about the user's email history. 
-            Use the following pieces of email content to answer the user's question. 
-            If you don't know the answer, just say that you don't know.
-            Always maintain a friendly and professional tone.
+            The user's name is Perf Opt and their email address is perfopt0@gmail.com.
+            When they ask questions using "I" or "me", it refers to Perf Opt (perfopt0@gmail.com).
+            
+            Use the following email content to answer the user's question.
+            
+            Rules:
+            1. Answer ONLY the question asked - no additional context or explanations
+            2. If you don't know the answer, just say "I don't know"
+            3. Keep answers short and direct
+            4. Do not include system messages, UI prompts, or follow-up questions
             
             Context from emails: {context}"""),
             MessagesPlaceholder(variable_name="chat_history"),
@@ -280,7 +305,8 @@ class EmailChatBot:
                 original_get_relevant_docs = retriever._get_relevant_documents
                 
                 def reranked_get_relevant_docs(*args, **kwargs):
-                    # Get more candidates
+                    # Get more candidates (k*3 like in chat_simple)
+                    kwargs['k'] = kwargs.get('k', 4) * 3  # Default k is 4, so get 12 candidates
                     docs = original_get_relevant_docs(*args, **kwargs)
                     k = len(docs) // 3  # Get final k from original count
                     
@@ -354,7 +380,7 @@ def create_chat_interface():
             label="Retrieval Method"
         )
         
-        use_rerank = gr.Checkbox(label="Use Reranking")
+        use_rerank = gr.Checkbox(label="Use Reranking", value=True)
         
         chatbot = gr.Chatbot(
             height=600,

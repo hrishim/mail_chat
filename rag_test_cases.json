@@ -2,15 +2,23 @@
     "test_cases": [
         {
             "query": "When did I send an email to Salvatore?",
-            "answer": "4 jan 2025."
+            "answer": "4 Jan 2025."
         },
         {
             "query": "Where does Robin van den Brink work?",
             "answer": "polar.rs"
         },
         {
-            "query": "When did I join the Les Paul mailing list",
-            "answer": "30 nov 2012"
+            "query": "When did I join the Les Paul mailing list?",
+            "answer": "30 Nov 2012"
+        },
+        {
+            "query": "Am I a member of soundcloud?",
+            "answer": "Yes, you are a member of soundcloud."
+        },
+        {
+            "query": "What is Christopher's last name?",
+            "answer": "Wilson"
         }
     ]
 } 
