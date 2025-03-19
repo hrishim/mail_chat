@@ -27,3 +27,7 @@ When selecting an embedding model:
 - Test its alignment with meta-llama3-8b-instruct to ensure semantic coherence in retrieved results. 
 
 Evaluating RAG flows: https://medium.com/@zilliz_learn/optimizing-rag-applications-a-guide-to-methodologies-metrics-and-evaluation-tools-for-enhanced-a9ae3d9c7149
+
+python data_prep.py --vectordb-dir hrishim_vectordb --save-frequency 10 hrishi_gmail.mbox
+
+python data_prep.py --vectordb-dir hrishim_vectordb --save-frequency 10 --resume hrishi_gmail.mbox

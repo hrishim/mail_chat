@@ -231,14 +231,14 @@ class EmailChatBot:
                 messages.append(AIMessage(content=msg["content"]))
         return messages
 
-    def get_relevant_context(self, query: str, k: int = 4, use_rerank: bool = False) -> str:
+    def get_relevant_context(self, query: str, k: int = 4, use_rerank: bool = False, rerank_multiplier: int = 3) -> str:
         """Retrieve relevant email context for the query."""
         if not use_rerank:
             # Original method
             docs = self.vectorstore.similarity_search(query, k=k)
         else:
             # Get more candidates for reranking
-            docs = self.vectorstore.similarity_search(query, k=k*3)
+            docs = self.vectorstore.similarity_search(query, k=k*rerank_multiplier)
             
             # Compute query embedding once
             query_embedding = self.embeddings.embed_query(query)
@@ -256,7 +256,7 @@ class EmailChatBot:
                 scores.append((similarity, doc))
             
             # Sort by scores and take top k
-            docs = [doc for score, doc in sorted(scores, key=lambda x: x[0], reverse=True)[:k]]
+            docs = [doc for _, doc in sorted(scores, key=lambda x: x[0], reverse=True)[:k]]
         
         # Store the retrieved documents
         self.last_retrieved_docs = docs
@@ -296,7 +296,7 @@ class EmailChatBot:
             print(f"Traceback: {traceback.format_exc()}")
             return "I apologize, but I encountered an error while processing your request."
 
-    def chat_chain(self, message: str, use_rerank: bool = False) -> str:
+    def chat_chain(self, message: str, use_rerank: bool = False, rerank_multiplier: int = 5) -> str:
         """Process a chat message using the ConversationalRetrievalChain."""
         try:
             if use_rerank:
@@ -305,10 +305,9 @@ class EmailChatBot:
                 original_get_relevant_docs = retriever._get_relevant_documents
                 
                 def reranked_get_relevant_docs(*args, **kwargs):
-                    # Get more candidates (k*3 like in chat_simple)
-                    kwargs['k'] = kwargs.get('k', 4) * 3  # Default k is 4, so get 12 candidates
-                    docs = original_get_relevant_docs(*args, **kwargs)
-                    k = len(docs) // 3  # Get final k from original count
+                    # Get more candidates
+                    k = kwargs.get('k', 4)
+                    docs = original_get_relevant_docs(*args, **{**kwargs, 'k': k * rerank_multiplier})
                     
                     # Compute query embedding once
                     query_embedding = self.embeddings.embed_query(message)
@@ -376,7 +375,7 @@ def create_chat_interface():
         
         retrieval_method = gr.Radio(
             choices=["Simple RAG", "Conversational Chain"],
-            value="Simple RAG",
+            value="Conversational Chain",
             label="Retrieval Method"
         )
         
