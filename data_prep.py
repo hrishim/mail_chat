@@ -1,6 +1,6 @@
 import mailbox
-#from email import message_from_bytes
-#from email.header import decode_header
+from email import message_from_bytes
+from email.header import decode_header, make_header
 from bs4 import BeautifulSoup
 import re
 import os, sys, shutil
@@ -96,15 +96,36 @@ def parse_email_date(date_str: str) -> str:
     Returns:
         Date string in format 'YYYY-MM-DD HH:MM:SS±HHMM'
     """
+    if not date_str:
+        raise ValueError("Empty date string")
+
     # Clean up the date string
     date_str = date_str.split('(')[0].strip()  # Remove (UTC) or similar parenthetical
+    if not date_str:
+        raise ValueError("Date string is empty after cleanup")
+    
+    # Fix invalid timezone offsets (like +0580)
+    tz_match = re.search(r'([+-])(\d{2})(\d{2})$', date_str)
+    if tz_match:
+        sign, hours, mins = tz_match.groups()
+        if int(mins) not in (0, 30):
+            # Round to nearest valid offset
+            if int(mins) > 30:
+                hours = str(int(hours) + 1).zfill(2)
+                mins = "00"
+            else:
+                mins = "30"
+        date_str = re.sub(r'[+-]\d{4}$', f'{sign}{hours}{mins}', date_str)
     
     # Try various email date formats
     for fmt in [
         '%a, %d %b %Y %H:%M:%S %z',  # Standard email format: 'Sun, 09 Feb 2025 09:37:31 -0800'
-        '%d %b %Y %H:%M:%S %z',      # Without weekday
-        '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
-        '%a, %d %b %Y %H:%M:%S',     # Without timezone
+        '%d %b %Y %H:%M:%S %z',
+        '%a, %d %b %Y %H:%M:%S %Z',
+        '%a, %d %b %Y %H:%M:%S',
+        '%a %b %d %H:%M:%S %Y',      # Unix style: 'Thu Mar 19 14:16:11 2025'
+        '%a, %d %b %Y %H:%M %z',     # Without seconds
+        '%d %b %Y %H:%M %z',         # Without seconds and weekday
     ]:
         try:
             dt = datetime.strptime(date_str, fmt)
@@ -115,7 +136,10 @@ def parse_email_date(date_str: str) -> str:
         except ValueError:
             continue
     
-    raise ValueError(f"Could not parse date string: {date_str}")
+    print(f"WARNING: Failed to parse date string: '{date_str}'")
+    print(f"Date string length: {len(date_str)}")
+    print(f"Date string bytes: {date_str.encode()}")
+    raise ValueError(f"Could not parse date string: '{date_str}'")
 
 def parse_date_for_sorting(date_str: str) -> datetime:
     """Parse a date string into a datetime object for sorting.
@@ -128,8 +152,28 @@ def parse_date_for_sorting(date_str: str) -> datetime:
     Returns:
         datetime object
     """
+    if not date_str:
+        print("WARNING: Empty date string in parse_date_for_sorting")
+        raise ValueError("Empty date string")
+
     # Clean up the date string
     date_str = date_str.split('(')[0].strip()  # Remove (UTC) or similar parenthetical
+    if not date_str:
+        print("WARNING: Date string is empty after cleanup in parse_date_for_sorting")
+        raise ValueError("Date string is empty after cleanup")
+    
+    # Fix invalid timezone offsets (like +0580)
+    tz_match = re.search(r'([+-])(\d{2})(\d{2})$', date_str)
+    if tz_match:
+        sign, hours, mins = tz_match.groups()
+        if int(mins) not in (0, 30):
+            # Round to nearest valid offset
+            if int(mins) > 30:
+                hours = str(int(hours) + 1).zfill(2)
+                mins = "00"
+            else:
+                mins = "30"
+        date_str = re.sub(r'[+-]\d{4}$', f'{sign}{hours}{mins}', date_str)
     
     # Try our standard format first
     try:
@@ -143,6 +187,9 @@ def parse_date_for_sorting(date_str: str) -> datetime:
         '%d %b %Y %H:%M:%S %z',
         '%a, %d %b %Y %H:%M:%S %Z',
         '%a, %d %b %Y %H:%M:%S',
+        '%a %b %d %H:%M:%S %Y',      # Unix style: 'Thu Mar 19 14:16:11 2025'
+        '%a, %d %b %Y %H:%M %z',     # Without seconds
+        '%d %b %Y %H:%M %z',         # Without seconds and weekday
     ]:
         try:
             dt = datetime.strptime(date_str, fmt)
@@ -154,7 +201,10 @@ def parse_date_for_sorting(date_str: str) -> datetime:
         except ValueError:
             continue
     
-    raise ValueError(f"Could not parse date string: {date_str}")
+    print(f"WARNING: Failed to parse date string in parse_date_for_sorting: '{date_str}'")
+    print(f"Date string length: {len(date_str)}")
+    print(f"Date string bytes: {date_str.encode()}")
+    raise ValueError(f"Could not parse date string: '{date_str}'")
 
 def load_mbox(file_path: Union[str, os.PathLike]) -> list[Message]:
     """Loads an mbox file and extracts messages."""
@@ -168,15 +218,15 @@ def load_mbox(file_path: Union[str, os.PathLike]) -> list[Message]:
                 content = clean_content(content)
                 
                 # Get Gmail-specific headers
-                gmail_labels = msg.get('X-Gmail-Labels', '').split(',')
+                gmail_labels = str(msg.get('X-Gmail-Labels', '')).split(',')
                 gmail_labels = [label.strip() for label in gmail_labels if label.strip()]
                 
-                thread_id = msg.get('X-GM-THRID')
-                in_reply_to = msg.get('In-Reply-To')
-                references = msg.get('References', '').split()
+                thread_id = str(msg.get('X-GM-THRID', ''))
+                in_reply_to = str(msg.get('In-Reply-To', ''))
+                references = str(msg.get('References', '')).split()
                 
                 # Parse and standardize the date
-                date_str = msg.get('Date')
+                date_str = str(msg.get('Date', ''))
                 if date_str:
                     try:
                         date = parse_email_date(date_str)
@@ -186,11 +236,20 @@ def load_mbox(file_path: Union[str, os.PathLike]) -> list[Message]:
                 else:
                     print("Warning: Message has no date, skipping")
                     continue
+
+                # Properly decode headers
+                def decode_header_str(header):
+                    if not header:
+                        return ''
+                    try:
+                        return str(make_header(decode_header(str(header))))
+                    except:
+                        return str(header)
                 
                 message = Message(
-                    to=msg.get('To', ''),
-                    sender=msg.get('From', ''),
-                    subject=msg.get('Subject', ''),
+                    to=decode_header_str(msg.get('To')),
+                    sender=decode_header_str(msg.get('From')),
+                    subject=decode_header_str(msg.get('Subject')),
                     date=date,
                     content=content,
                     x_gmail_labels=gmail_labels,
@@ -205,7 +264,7 @@ def load_mbox(file_path: Union[str, os.PathLike]) -> list[Message]:
     
     return messages
 
-def load_mbox_in_chunks(file_path: Union[str, os.PathLike], chunk_size: int = 100) -> Generator[list[Message], None, None]:
+def load_mbox_in_chunks(file_path: Union[str, os.PathLike], batch_size: int = 100) -> Generator[list[Message], None, None]:
     """Loads an mbox file and yields messages in chunks."""
     mbox = mailbox.mbox(file_path)
     messages = []
@@ -249,7 +308,7 @@ def load_mbox_in_chunks(file_path: Union[str, os.PathLike], chunk_size: int = 10
                 )
                 messages.append(message)
                 
-                if len(messages) >= chunk_size:
+                if len(messages) >= batch_size:
                     yield messages
                     messages = []
         except Exception as e:
@@ -259,7 +318,7 @@ def load_mbox_in_chunks(file_path: Union[str, os.PathLike], chunk_size: int = 10
     if messages:
         yield messages
 
-def chunk_thread_messages(thread_messages: list[Message], chunk_size: int = 400, chunk_overlap: int = 100) -> list[Document]:
+def chunk_thread_messages(thread_messages: list[Message], text_chunk_size: int = 400, chunk_overlap: int = 100) -> list[Document]:
     """Chunks messages from a single thread while maintaining conversation context.
     
     This function is optimized for RAG by keeping related messages together in chunks.
@@ -267,14 +326,14 @@ def chunk_thread_messages(thread_messages: list[Message], chunk_size: int = 400,
     
     Args:
         thread_messages: List of messages in a thread, assumed to be sorted by date
-        chunk_size: Maximum size of each chunk
+        text_chunk_size: Maximum size of each text chunk in characters
         chunk_overlap: Number of characters to overlap between chunks
         
     Returns:
         List of Document objects containing chunks with their metadata
     """
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
+        chunk_size=text_chunk_size,
         chunk_overlap=chunk_overlap,
         length_function=len,
         separators=["\n\nFrom:", "\nFrom:", "\n\n", "\n", " ", ""]
@@ -387,22 +446,34 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], chunk_size: 
     orphan_messages: list[Message] = []
     threads_processed = 0
 
-    def safe_strip(s: str) -> str:
-        return s.strip("\r") if s is not None else ""
+    def safe_strip(s) -> str:
+        """Safely decode and strip email headers."""
+        if s is None:
+            return ""
+        try:
+            # Convert Header objects to string and decode
+            return str(make_header(decode_header(str(s)))).strip("\r")
+        except:
+            # Fallback to simple string conversion
+            return str(s).strip("\r")
 
     for message in mbox:
         # Extract message data (reusing code from load_mbox)
         sender = safe_strip(message['From'])
         to = safe_strip(message['To'])
         subject = safe_strip(message['Subject'])
-        date = message['Date']
+        date = safe_strip(message['Date'])
+        if not date:
+            print(f"WARNING: Skipping message with empty date. Subject: '{subject}'")
+            continue
+
         xgmThrid = safe_strip(message['X-GM-THRID'])
         igt = message.get('In-Reply-To')
         inReplyTo = safe_strip(igt) if igt else ""
         refs = message.get("References")
         references = refs.split() if refs else []
         labels = message.get("X-Gmail-Labels")
-        x_gmail_labels: list[str] = labels.split(',') if labels else [] 
+        x_gmail_labels: list[str] = safe_strip(labels).split(',') if labels else [] 
 
         # Extract content
         content = extract_content(message)
@@ -457,8 +528,8 @@ def main():
     """Process email threads from mbox file in memory-efficient chunks."""
     parser = argparse.ArgumentParser(description='Process mbox file into threaded chunks for RAG.')
     parser.add_argument('mbox_file', type=str, help='Path to the mbox file to process')
-    parser.add_argument('--chunk-size', type=int, default=50,
-                       help='Number of threads to process in each batch (default: 50)')
+    parser.add_argument('--chunk-size', type=int, default=1000,
+                       help='Number of threads to process in each batch (default: 1000)')
     parser.add_argument('--text-chunk-size', type=int, default=400,
                        help='Maximum size of each text chunk in characters (default: 400, recommended for NV-Embed-QA)')
     parser.add_argument('--chunk-overlap', type=int, default=100,
@@ -504,11 +575,16 @@ def main():
         sys.exit(1)
         
     vectorstore = None
+    total_emails_processed = 0
+    total_chunks_processed = 0
     
     try:
         # Process emails in batches of threads
         for thread_batch in load_and_organize_in_chunks(args.mbox_file, chunk_size=args.chunk_size):
+            batch_email_count = sum(len(messages) for messages in thread_batch.values())
+            total_emails_processed += batch_email_count
             print(f"\nProcessing new batch of up to {args.chunk_size} threads...")
+            print(f"Total emails processed so far: {total_emails_processed}")
             
             batch_documents = []
             
@@ -516,7 +592,7 @@ def main():
                 # Create chunks that maintain thread context
                 documents = chunk_thread_messages(
                     messages,
-                    chunk_size=args.text_chunk_size,
+                    text_chunk_size=args.text_chunk_size,
                     chunk_overlap=args.chunk_overlap
                 )
                 
@@ -538,7 +614,9 @@ def main():
             
             # Save after each batch to prevent data loss
             vectorstore.save_local(str(vectordb_dir))
+            total_chunks_processed += len(batch_documents)
             print(f"Saved vector store with {len(batch_documents)} new chunks")
+            print(f"Total chunks processed so far: {total_chunks_processed}")
                 
     except Exception as e:
         print(f"Error processing mbox file: {e}")
