@@ -270,8 +270,10 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
         log_date_error(date_str, "Empty date string")
         return None
 
-    # Clean up parenthetical timezone names
-    date_str = re.sub(r'\s*\([^)]+\)\s*$', '', date_str)
+    # Clean up parenthetical timezone names and extra spaces
+    date_str = re.sub(r'\s*\([^)]+\)\s*$', '', date_str)  # Remove (IST) etc.
+    date_str = re.sub(r'\s+', ' ', date_str)  # Normalize spaces
+    date_str = date_str.strip()
 
     # Handle Unix-style timestamps with timezone but no space
     # e.g., "Thu Apr 16 20:59:04 2015+0530" -> "Thu Apr 16 20:59:04 2015 +0530"
@@ -293,6 +295,8 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
         'PDT': '-0700',  # Pacific Daylight Time
         'PST': '-0800',  # Pacific Standard Time
         'IST': '+0530',  # Indian Standard Time
+        'GMT': '+0000',  # Greenwich Mean Time
+        'UT': '+0000',   # Universal Time
     }
     
     # Replace timezone names with their offsets
@@ -301,17 +305,42 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
             date_str = date_str.replace(f" {tz_name}", f" {offset}")
             break
 
-    # Clean up whitespace
-    date_str = re.sub(r'\s+', ' ', date_str)
+    # Handle special case: "Fri May 31 15:00:09 IST 2013" -> "Fri May 31 15:00:09 2013 +0530"
+    tz_year_match = re.search(r'(\d{2}:\d{2}:\d{2})\s+([A-Z]{2,4})\s+(\d{4})', date_str)
+    if tz_year_match:
+        time_str, tz_name, year = tz_year_match.groups()
+        if tz_name in tz_map:
+            date_str = date_str.replace(f"{time_str} {tz_name} {year}", f"{time_str} {year} {tz_map[tz_name]}")
+
+    # Handle special case: "Thu Nov 07 18:30:38 GMT+05:30 2013" -> "Thu Nov 07 18:30:38 2013 +0530"
+    gmt_offset_match = re.search(r'GMT([+-]\d{2}):(\d{2})\s+(\d{4})', date_str)
+    if gmt_offset_match:
+        hour, minute, year = gmt_offset_match.groups()
+        date_str = re.sub(r'GMT([+-]\d{2}):(\d{2})\s+(\d{4})', rf'\3 \1\2', date_str)
+
+    # Handle weekday with comma and extra spaces: "Monday,  2 Aug 2004" -> "Mon, 2 Aug 2004"
+    weekdays = {
+        'Monday': 'Mon',
+        'Tuesday': 'Tue',
+        'Wednesday': 'Wed',
+        'Thursday': 'Thu',
+        'Friday': 'Fri',
+        'Saturday': 'Sat',
+        'Sunday': 'Sun'
+    }
+    for full, abbr in weekdays.items():
+        if date_str.startswith(full):
+            date_str = date_str.replace(full, abbr, 1)
+            break
 
     # Try our standard format first
     try:
         return datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S%z')
     except ValueError:
         pass
-    
+
     # If that fails, try email formats
-    for fmt in [
+    formats = [
         '%a, %d %b %Y %H:%M:%S %z',  # Standard email format: 'Sun, 09 Feb 2025 09:37:31 -0800'
         '%d %b %Y %H:%M:%S %z',      # Without weekday
         '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
@@ -323,7 +352,14 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
         '%d %b %y %H:%M:%S',         # Short year format: '06 Apr 15 21:57:41'
         '%d %b %Y %H:%M:%S',         # Same but with full year
         '%d %b %y %H:%M %z',         # Short year with timezone: '30 Jun 13 07:26 -0800'
-    ]:
+        '%a, %d %b %Y %H:%M:%S',     # Without timezone
+        '%a, %d %b %y %H:%M:%S %z',  # Short year with timezone
+        '%a, %d %b %y %H:%M:%S',     # Short year without timezone
+        '%a, %d %b %Y %H:%M',        # Without seconds or timezone
+        '%a %b %d %H:%M:%S %z %Y',   # Unix style with timezone before year
+    ]
+
+    for fmt in formats:
         try:
             dt = datetime.strptime(date_str, fmt)
             if dt.tzinfo is None:
@@ -333,19 +369,7 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
             return dt
         except ValueError:
             continue
-    
-    # Try special handling for GMT+offset format
-    gmt_match = re.match(r'(\w{3} \w{3} \d{2} \d{2}:\d{2}:\d{2}) GMT([+-]\d{2}):?(\d{2}) (\d{4})', date_str)
-    if gmt_match:
-        try:
-            base_str, tz_hour, tz_min, year = gmt_match.groups()
-            # Convert to standard format with offset
-            reformatted = f"{base_str} {year} {tz_hour}{tz_min}"
-            dt = datetime.strptime(reformatted, '%a %b %d %H:%M:%S %Y %z')
-            return dt
-        except ValueError:
-            pass
-    
+
     # Log the error and return None
     print(f"WARNING: Failed to parse date string in parse_date_for_sorting: '{date_str}'")
     log_date_error(date_str)
