@@ -318,6 +318,12 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
         hour, minute, year = gmt_offset_match.groups()
         date_str = re.sub(r'GMT([+-]\d{2}):(\d{2})\s+(\d{4})', rf'\3 \1\2', date_str)
 
+    # Handle special case: "Sat Jun 08 12:44:28 GMT+05:30 2013" -> "Sat Jun 08 12:44:28 2013 +0530"
+    gmt_offset_no_space = re.search(r'(\d{2}:\d{2}:\d{2})\s*GMT([+-]\d{2}):(\d{2})\s+(\d{4})', date_str)
+    if gmt_offset_no_space:
+        time_str, hour, minute, year = gmt_offset_no_space.groups()
+        date_str = re.sub(r'(\d{2}:\d{2}:\d{2})\s*GMT([+-]\d{2}):(\d{2})\s+(\d{4})', rf'\1 \4 \2\3', date_str)
+
     # Handle weekday with comma and extra spaces: "Monday,  2 Aug 2004" -> "Mon, 2 Aug 2004"
     weekdays = {
         'Monday': 'Mon',
