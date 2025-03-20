@@ -439,13 +439,13 @@ def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
     
     return org_msgs
 
-def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], chunk_size: int = 100, start_idx: int = 0) -> Generator[dict[str, list[Message]], None, None]:
+def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_batch: int = 500, start_idx: int = 0) -> Generator[dict[str, list[Message]], None, None]:
     """Loads messages from mbox in chunks and organizes them by thread.
     Uses a buffer to accumulate messages from the same thread before yielding.
     
     Args:
         file_path: Path to the mbox file
-        chunk_size: Number of threads to accumulate before yielding
+        threads_per_batch: Number of threads to accumulate before yielding (default: 500)
         start_idx: Index of first message to process (for resuming)
         
     Yields:
@@ -511,7 +511,7 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], chunk_size: 
             orphan_messages.append(msg_obj)
 
         # When we've accumulated enough threads, sort them by date and yield
-        if threads_processed >= chunk_size:
+        if threads_processed >= threads_per_batch:
             # Sort messages in each thread by date
             for thread_messages in thread_buffer.values():
                 thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date))
@@ -566,18 +566,18 @@ def main():
     """Process email threads from mbox file in memory-efficient chunks."""
     parser = argparse.ArgumentParser(description='Process mbox file into threaded chunks for RAG.')
     parser.add_argument('mbox_file', type=str, help='Path to the mbox file to process')
-    parser.add_argument('--chunk-size', type=int, default=1000,
-                       help='Number of threads to process in each batch (default: 1000)')
+    parser.add_argument('--vectordb-dir', required=True,
+                       help='Directory to save vector store in')
+    parser.add_argument('--threads-per-batch', type=int, default=500,
+                       help='Number of email threads to process in each batch (default: 500)')
     parser.add_argument('--text-chunk-size', type=int, default=400,
                        help='Maximum size of each text chunk in characters (default: 400, recommended for NV-Embed-QA)')
     parser.add_argument('--chunk-overlap', type=int, default=100,
                        help='Number of characters to overlap between chunks (default: 100)')
-    parser.add_argument('--vectordb-dir', type=str, default='./mail_vectordb',
-                       help='Directory to save the vector database (default: ./mail_vectordb)')
     parser.add_argument('--save-frequency', type=int, default=5,
                        help='Save vector store every N batches (default: 5)')
-    parser.add_argument('--num-processes', type=int, default=None,
-                       help='Number of processes to use (default: number of CPU cores - 1)')
+    parser.add_argument('--num-processes', type=int, default=11,
+                       help='Number of processes to use (default: 11)')
     parser.add_argument('--checkpoint-file', type=str, default='processing_checkpoint.json',
                        help='File to store processing checkpoint (default: processing_checkpoint.json)')
     parser.add_argument('--resume', action='store_true',
@@ -661,7 +661,7 @@ def main():
                         print(f"Resuming from message {start_idx}")
                         break
             
-            for thread_batch in load_and_organize_in_chunks(args.mbox_file, chunk_size=args.chunk_size, start_idx=start_idx):
+            for thread_batch in load_and_organize_in_chunks(args.mbox_file, threads_per_batch=args.threads_per_batch, start_idx=start_idx):
                 batch_email_count = sum(len(messages) for messages in thread_batch.values())
                 total_emails_processed += batch_email_count
                 
@@ -676,11 +676,17 @@ def main():
                     with open(checkpoint_path, 'w') as f:
                         json.dump(checkpoint, f)
                 
-                print(f"\nProcessing new batch of up to {args.chunk_size} threads...")
-                print(f"Total emails processed so far: {total_emails_processed}")
-                print(f"Using {args.num_processes} processes")
+                num_threads = len(thread_batch)
+                print(f"\nCollected new batch:")
+                print(f"├── Threads: {num_threads}")
+                print(f"└── Emails: {batch_email_count} (avg {batch_email_count/num_threads:.1f} per thread)")
+                print(f"\nProgress:")
+                print(f"├── Total threads processed: {total_emails_processed//args.threads_per_batch * args.threads_per_batch}")
+                print(f"└── Total emails processed: {total_emails_processed}")
                 
                 # Submit batch for parallel processing
+                print(f"\nProcessing with {args.num_processes} workers...")
+                
                 future = executor.submit(
                     process_thread_batch,
                     thread_batch,
@@ -690,35 +696,39 @@ def main():
                 futures.append(future)
                 thread_batches.append(thread_batch)
                 
-                # When we have enough batches, process their results
+                # Process results when we have enough batches or have completed futures
                 if len(futures) >= args.num_processes:
+                    # Process any completed futures
+                    done_futures = []
                     for future in futures:
-                        batch_documents = future.result()
-                        
-                        # Create or update vector store
-                        if vectorstore is None:
-                            vectorstore = FAISS.from_documents(
-                                documents=batch_documents,
-                                embedding=embeddings
-                            )
-                        else:
-                            vectorstore.add_documents(batch_documents)
-                        
-                        total_chunks_processed += len(batch_documents)
-                        print(f"Processed {len(batch_documents)} chunks")
-                        print(f"Total chunks processed so far: {total_chunks_processed}")
-                        
-                        batches_since_save += 1
-                        
-                        # Save periodically to prevent data loss
-                        if batches_since_save >= args.save_frequency:
-                            print("Saving vector store...")
-                            vectorstore.save_local(str(vectordb_dir))
-                            batches_since_save = 0
+                        if future.done():
+                            done_futures.append(future)
+                            batch_documents = future.result()
+                            
+                            # Create or update vector store
+                            if vectorstore is None:
+                                vectorstore = FAISS.from_documents(
+                                    documents=batch_documents,
+                                    embedding=embeddings
+                                )
+                            else:
+                                vectorstore.add_documents(batch_documents)
+                            
+                            total_chunks_processed += len(batch_documents)
+                            print(f"Processed {len(batch_documents)} chunks")
+                            print(f"Total chunks processed so far: {total_chunks_processed}")
+                            
+                            batches_since_save += 1
                     
-                    # Clear processed futures
-                    futures = []
-                    thread_batches = []
+                    # Remove processed futures
+                    for future in done_futures:
+                        futures.remove(future)
+                        
+                    # Save periodically to prevent data loss
+                    if batches_since_save >= args.save_frequency:
+                        print("Saving vector store...")
+                        vectorstore.save_local(str(vectordb_dir))
+                        batches_since_save = 0
             
             # Process any remaining futures
             for future in futures:
