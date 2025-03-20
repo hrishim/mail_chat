@@ -166,6 +166,15 @@ def parse_email_date(date_str: str) -> str:
     # Clean up parenthetical timezone names
     date_str = re.sub(r'\s*\([^)]+\)\s*$', '', date_str)
 
+    # Handle Unix-style timestamps with timezone but no space
+    # e.g., "Thu Apr 16 20:59:04 2015+0530" -> "Thu Apr 16 20:59:04 2015 +0530"
+    unix_tz_match = re.search(r'(\d{4})[+-]\d{4}$', date_str)
+    if unix_tz_match:
+        year_pos = date_str.find(unix_tz_match.group(1))
+        if year_pos != -1:
+            year_end = year_pos + 4
+            date_str = date_str[:year_end] + ' ' + date_str[year_end:]
+
     # Map common timezone names to their UTC offsets
     tz_map = {
         'EDT': '-0400',  # Eastern Daylight Time
@@ -539,7 +548,7 @@ def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
     
     return org_msgs
 
-def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_batch: int = 500, start_idx: int = 0) -> Generator[dict[str, list[Message]], None, None]:
+def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_batch: int = 500, start_idx: int = 0) -> Generator[list[list[Message]], None, None]:
     """Load messages from mbox file and organize them by thread, yielding batches."""
     mbox = mailbox.mbox(file_path)
     current_batch: dict[str, list[Message]] = {}
@@ -591,22 +600,22 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_
             thread_batch.append(thread_messages)
         yield thread_batch
 
-def process_thread_batch(thread_batch: dict[str, list[Message]], text_chunk_size: int, chunk_overlap: int) -> list[Document]:
+def process_thread_batch(thread_batch: list[list[Message]], text_chunk_size: int, chunk_overlap: int) -> list[Document]:
     """Process a single batch of threads into documents.
     This function runs in a separate process."""
     batch_documents = []
     
-    for thread_id, messages in thread_batch.items():
+    for thread_messages in thread_batch:
         # Create chunks that maintain thread context
         documents = chunk_thread_messages(
-            messages,
+            thread_messages,
             text_chunk_size=text_chunk_size,
             chunk_overlap=chunk_overlap
         )
         
         # Add thread_id to each document's metadata
         for i, doc in enumerate(documents):
-            doc.metadata['thread_id'] = thread_id
+            doc.metadata['thread_id'] = thread_messages[0].x_gm_thrid
             doc.metadata['chunk_index'] = i
             doc.metadata['total_chunks'] = len(documents)
             batch_documents.append(doc)
@@ -717,14 +726,14 @@ def main():
                         break
             
             for thread_batch in load_and_organize_in_chunks(args.mbox_file, threads_per_batch=args.threads_per_batch, start_idx=start_idx):
-                batch_email_count = sum(len(messages) for messages in thread_batch.values())
+                batch_email_count = sum(len(thread_messages) for thread_messages in thread_batch)
                 total_emails_processed += batch_email_count
                 
                 # Update checkpoint
                 last_message = None
-                for messages in thread_batch.values():
-                    if messages:
-                        last_message = messages[-1]
+                for thread_messages in thread_batch:
+                    if thread_messages:
+                        last_message = thread_messages[-1]
                 if last_message:
                     checkpoint['emails_processed'] = total_emails_processed
                     checkpoint['last_message_id'] = last_message.message_id
