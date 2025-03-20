@@ -232,13 +232,42 @@ def parse_email_date(date_str: str) -> str:
     print(f"Date string bytes: {date_str.encode()}")
     raise ValueError(f"Could not parse date string: '{date_str}'")
 
+def log_date_error(date_str: str, error_type: str = "Failed to parse") -> None:
+    """Log date parsing errors to file with absolute path."""
+    try:
+        error_log_path = Path(__file__).parent / 'date_fmt_error.txt'
+        with open(error_log_path, 'a', encoding='utf-8') as f:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            f.write(f"[{timestamp}] {error_type}: '{date_str}'\n")
+            f.write(f"  Length: {len(date_str)}\n")
+            f.write(f"  Bytes: {date_str.encode()}\n")
+            f.write(f"  Tried formats:\n")
+            for fmt in [
+                '%Y-%m-%d %H:%M:%S%z',  # Our standard format
+                '%a, %d %b %Y %H:%M:%S %z',
+                '%d %b %Y %H:%M:%S %z',
+                '%a, %d %b %Y %H:%M:%S %Z',
+                '%a, %d %b %Y %H:%M:%S',
+                '%a %b %d %H:%M:%S %Y %z',
+                '%a %b %d %H:%M:%S %Y',
+                '%a, %d %b %Y %H:%M %z',
+                '%d %b %Y %H:%M %z',
+                '%d %b %y %H:%M:%S',
+                '%d %b %Y %H:%M:%S',
+                '%d %b %y %H:%M %z',
+            ]:
+                f.write(f"    - {fmt}\n")
+            f.write("\n")
+            f.flush()  # Force write to disk
+    except Exception as e:
+        print(f"Error writing to date_fmt_error.txt: {e}")
+
 @lru_cache(maxsize=10000)
 def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
     """Parse date string into datetime object for sorting. Returns None if parsing fails."""
     if not date_str:
         print("WARNING: Empty date string in parse_date_for_sorting")
-        with open('date_fmt_error.txt', 'a') as f:
-            f.write(f"Empty date string\n")
+        log_date_error(date_str, "Empty date string")
         return None
 
     # Clean up parenthetical timezone names
@@ -319,28 +348,7 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
     
     # Log the error and return None
     print(f"WARNING: Failed to parse date string in parse_date_for_sorting: '{date_str}'")
-    with open('date_fmt_error.txt', 'a') as f:
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        f.write(f"[{timestamp}] Failed format: '{date_str}'\n")
-        f.write(f"  Length: {len(date_str)}\n")
-        f.write(f"  Bytes: {date_str.encode()}\n")
-        f.write(f"  Tried formats:\n")
-        for fmt in [
-            '%Y-%m-%d %H:%M:%S%z',  # Our standard format
-            '%a, %d %b %Y %H:%M:%S %z',
-            '%d %b %Y %H:%M:%S %z',
-            '%a, %d %b %Y %H:%M:%S %Z',
-            '%a, %d %b %Y %H:%M:%S',
-            '%a %b %d %H:%M:%S %Y %z',
-            '%a %b %d %H:%M:%S %Y',
-            '%a, %d %b %Y %H:%M %z',
-            '%d %b %Y %H:%M %z',
-            '%d %b %y %H:%M:%S',
-            '%d %b %Y %H:%M:%S',
-            '%d %b %y %H:%M %z',
-        ]:
-            f.write(f"    - {fmt}\n")
-        f.write("\n")
+    log_date_error(date_str)
     return None
 
 def load_mbox(file_path: Union[str, os.PathLike]) -> list[Message]:
