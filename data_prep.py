@@ -217,6 +217,11 @@ def parse_email_date(date_str: str) -> str:
         '%d %b %y %H:%M:%S',         # Short year format: '06 Apr 15 21:57:41'
         '%d %b %Y %H:%M:%S',         # Same but with full year
         '%d %b %y %H:%M %z',         # Short year with timezone: '30 Jun 13 07:26 -0800'
+        '%a, %d %b %Y %H:%M:%S',     # Without timezone
+        '%a, %d %b %y %H:%M:%S %z',  # Short year with timezone
+        '%a, %d %b %y %H:%M:%S',     # Short year without timezone
+        '%a, %d %b %Y %H:%M',        # Without seconds or timezone
+        '%a %b %d %H:%M:%S %z %Y',   # Unix style with timezone before year
     ]:
         try:
             dt = datetime.strptime(date_str, fmt)
@@ -324,6 +329,12 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
         time_str, hour, minute, year = gmt_offset_no_space.groups()
         date_str = re.sub(r'(\d{2}:\d{2}:\d{2})\s*GMT([+-]\d{2}):(\d{2})\s+(\d{4})', rf'\1 \4 \2\3', date_str)
 
+    # Handle special case: "Fri May 31 15:00:09 +0530 2013" -> "Fri May 31 15:00:09 2013 +0530"
+    tz_before_year = re.search(r'(\d{2}:\d{2}:\d{2})\s+([+-]\d{4})\s+(\d{4})', date_str)
+    if tz_before_year:
+        time_str, tz, year = tz_before_year.groups()
+        date_str = date_str.replace(f"{time_str} {tz} {year}", f"{time_str} {year} {tz}")
+
     # Handle weekday with comma and extra spaces: "Monday,  2 Aug 2004" -> "Mon, 2 Aug 2004"
     weekdays = {
         'Monday': 'Mon',
@@ -363,6 +374,11 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
         '%a, %d %b %y %H:%M:%S',     # Short year without timezone
         '%a, %d %b %Y %H:%M',        # Without seconds or timezone
         '%a %b %d %H:%M:%S %z %Y',   # Unix style with timezone before year
+        '%d %b %y %H:%M:%S %z',      # Short year with timezone: '26 Nov 09 20:29:04 -0830'
+        '%a, %-d %b %Y %H:%M:%S',    # Single digit day: 'Sat, 4 Oct 2008 09:52:43'
+        '%d %b %Y',                  # Just date: '13 Apr 2006'
+        '%A, %d %b %Y %H:%M:%S %z',  # Full weekday with timezone
+        '%A, %-d %b %Y %H:%M:%S %z', # Full weekday, single digit day with timezone
     ]
 
     for fmt in formats:
