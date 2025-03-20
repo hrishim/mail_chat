@@ -19,6 +19,7 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 import json
+from datetime import timezone
 
 # Load environment variables from .env file
 load_dotenv()
@@ -52,6 +53,62 @@ class Message:
             f"Message-ID: {self.message_id}\n"
             f"Content: {self.content}"
         )
+
+    @classmethod
+    def from_email_message(cls, message: mboxMessage) -> Optional['Message']:
+        """Create Message object from mboxMessage."""
+        try:
+            content = extract_content(message)
+            if not content:
+                return None
+            
+            content = clean_content(content)
+            
+            # Get Gmail-specific headers
+            gmail_labels = str(message.get('X-Gmail-Labels', '')).split(',')
+            gmail_labels = [label.strip() for label in gmail_labels if label.strip()]
+            
+            thread_id = str(message.get('X-GM-THRID', ''))
+            in_reply_to = str(message.get('In-Reply-To', ''))
+            references = str(message.get('References', '')).split()
+            message_id = str(message.get('Message-ID', ''))
+            
+            # Parse and standardize the date
+            date_str = str(message.get('Date', ''))
+            if not date_str:
+                print("Warning: Message has no date, skipping")
+                return None
+            
+            try:
+                date = parse_email_date(date_str)
+            except ValueError:
+                print(f"Warning: Could not parse date '{date_str}', skipping message")
+                return None
+            
+            # Properly decode headers
+            def decode_header_str(header):
+                if not header:
+                    return ''
+                try:
+                    return str(make_header(decode_header(str(header))))
+                except:
+                    return str(header)
+            
+            return cls(
+                to=decode_header_str(message.get('To')),
+                sender=decode_header_str(message.get('From')),
+                subject=decode_header_str(message.get('Subject')),
+                date=date,
+                content=content,
+                x_gmail_labels=gmail_labels,
+                x_gm_thrid=thread_id,
+                inReplyTo=in_reply_to,
+                references=references,
+                message_id=message_id
+            )
+        except Exception as e:
+            print(f"Error creating Message object: {e}")
+            return None
 
 def extract_content(message: mboxMessage) -> Optional[str]:
     """Extracts content from an email message."""
@@ -167,14 +224,25 @@ def parse_email_date(date_str: str) -> str:
     raise ValueError(f"Could not parse date string: '{date_str}'")
 
 @lru_cache(maxsize=10000)
-def parse_date_for_sorting(date_str: str) -> datetime:
-    """Parse date string into datetime object for sorting."""
+def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
+    """Parse date string into datetime object for sorting. Returns None if parsing fails."""
     if not date_str:
         print("WARNING: Empty date string in parse_date_for_sorting")
-        raise ValueError("Empty date string")
+        with open('date_fmt_error.txt', 'a') as f:
+            f.write(f"Empty date string\n")
+        return None
 
     # Clean up parenthetical timezone names
     date_str = re.sub(r'\s*\([^)]+\)\s*$', '', date_str)
+
+    # Handle Unix-style timestamps with timezone but no space
+    # e.g., "Thu Apr 16 20:59:04 2015+0530" -> "Thu Apr 16 20:59:04 2015 +0530"
+    unix_tz_match = re.search(r'(\d{4})[+-]\d{4}$', date_str)
+    if unix_tz_match:
+        year_pos = date_str.find(unix_tz_match.group(1))
+        if year_pos != -1:
+            year_end = year_pos + 4
+            date_str = date_str[:year_end] + ' ' + date_str[year_end:]
 
     # Map common timezone names to their UTC offsets
     tz_map = {
@@ -195,16 +263,6 @@ def parse_date_for_sorting(date_str: str) -> datetime:
             date_str = date_str.replace(f" {tz_name}", f" {offset}")
             break
 
-    # Handle non-standard timezone offsets
-    if (match := re.search(r'([+-])(\d{2}):?(\d{2})$', date_str)):
-        sign, hours, mins = match.groups()
-        if int(mins) > 30:
-            hours = str(int(hours) + 1).zfill(2)
-            mins = "00"
-        else:
-            mins = "30"
-        date_str = re.sub(r'[+-]\d{2}:?\d{2}$', f'{sign}{hours}{mins}', date_str)
-
     # Clean up whitespace
     date_str = re.sub(r'\s+', ' ', date_str)
 
@@ -216,10 +274,10 @@ def parse_date_for_sorting(date_str: str) -> datetime:
     
     # If that fails, try email formats
     for fmt in [
-        '%a, %d %b %Y %H:%M:%S %z',
-        '%d %b %Y %H:%M:%S %z',
-        '%a, %d %b %Y %H:%M:%S %Z',
-        '%a, %d %b %Y %H:%M:%S',
+        '%a, %d %b %Y %H:%M:%S %z',  # Standard email format: 'Sun, 09 Feb 2025 09:37:31 -0800'
+        '%d %b %Y %H:%M:%S %z',      # Without weekday
+        '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
+        '%a, %d %b %Y %H:%M:%S',     # Without timezone
         '%a %b %d %H:%M:%S %Y %z',   # Unix style with timezone: 'Fri Apr 17 00:16:47 2015 +0530'
         '%a %b %d %H:%M:%S %Y',      # Unix style: 'Thu Mar 19 14:16:11 2025'
         '%a, %d %b %Y %H:%M %z',     # Without seconds
@@ -250,10 +308,31 @@ def parse_date_for_sorting(date_str: str) -> datetime:
         except ValueError:
             pass
     
+    # Log the error and return None
     print(f"WARNING: Failed to parse date string in parse_date_for_sorting: '{date_str}'")
-    print(f"Date string length: {len(date_str)}")
-    print(f"Date string bytes: {date_str.encode()}")
-    raise ValueError(f"Could not parse date string: '{date_str}'")
+    with open('date_fmt_error.txt', 'a') as f:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        f.write(f"[{timestamp}] Failed format: '{date_str}'\n")
+        f.write(f"  Length: {len(date_str)}\n")
+        f.write(f"  Bytes: {date_str.encode()}\n")
+        f.write(f"  Tried formats:\n")
+        for fmt in [
+            '%Y-%m-%d %H:%M:%S%z',  # Our standard format
+            '%a, %d %b %Y %H:%M:%S %z',
+            '%d %b %Y %H:%M:%S %z',
+            '%a, %d %b %Y %H:%M:%S %Z',
+            '%a, %d %b %Y %H:%M:%S',
+            '%a %b %d %H:%M:%S %Y %z',
+            '%a %b %d %H:%M:%S %Y',
+            '%a, %d %b %Y %H:%M %z',
+            '%d %b %Y %H:%M %z',
+            '%d %b %y %H:%M:%S',
+            '%d %b %Y %H:%M:%S',
+            '%d %b %y %H:%M %z',
+        ]:
+            f.write(f"    - {fmt}\n")
+        f.write("\n")
+    return None
 
 def load_mbox(file_path: Union[str, os.PathLike]) -> list[Message]:
     """Loads an mbox file and extracts messages."""
@@ -277,16 +356,16 @@ def load_mbox(file_path: Union[str, os.PathLike]) -> list[Message]:
                 
                 # Parse and standardize the date
                 date_str = str(msg.get('Date', ''))
-                if date_str:
-                    try:
-                        date = parse_email_date(date_str)
-                    except ValueError:
-                        print(f"Warning: Could not parse date '{date_str}', skipping message")
-                        continue
-                else:
+                if not date_str:
                     print("Warning: Message has no date, skipping")
                     continue
-
+                
+                try:
+                    date = parse_email_date(date_str)
+                except ValueError:
+                    print(f"Warning: Could not parse date '{date_str}', skipping message")
+                    continue
+                
                 # Properly decode headers
                 def decode_header_str(header):
                     if not header:
@@ -461,103 +540,56 @@ def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
     return org_msgs
 
 def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_batch: int = 500, start_idx: int = 0) -> Generator[dict[str, list[Message]], None, None]:
-    """Loads messages from mbox in chunks and organizes them by thread.
-    Uses a buffer to accumulate messages from the same thread before yielding.
-    
-    Args:
-        file_path: Path to the mbox file
-        threads_per_batch: Number of threads to accumulate before yielding (default: 500)
-        start_idx: Index of first message to process (for resuming)
-        
-    Yields:
-        Dictionary mapping thread IDs to lists of messages in that thread
-    """
+    """Load messages from mbox file and organize them by thread, yielding batches."""
     mbox = mailbox.mbox(file_path)
-    thread_buffer: dict[str, list[Message]] = {}
-    orphan_messages: list[Message] = []
-    threads_processed = 0
-
-    def safe_strip(s) -> str:
-        """Safely decode and strip email headers."""
-        if s is None:
-            return ""
-        try:
-            # Convert Header objects to string and decode
-            return str(make_header(decode_header(str(s)))).strip("\r")
-        except:
-            # Fallback to simple string conversion
-            return str(s).strip("\r")
-
-    for idx, message in enumerate(mbox):
+    current_batch: dict[str, list[Message]] = {}
+    idx = -1
+    
+    for message in mbox:
+        idx += 1
         if idx < start_idx:
             continue
-
-        # Extract message data (reusing code from load_mbox)
-        sender = safe_strip(message['From'])
-        to = safe_strip(message['To'])
-        subject = safe_strip(message['Subject'])
-        date = safe_strip(message['Date'])
-        if not date:
-            print(f"WARNING: Skipping message with empty date. Subject: '{subject}'")
+            
+        try:
+            # Extract thread ID
+            thread_id = str(message.get('X-GM-THRID', ''))
+            if not thread_id:
+                continue  # Skip messages without thread ID
+            
+            # Create Message object
+            msg = Message.from_email_message(message)
+            if msg is None:
+                continue  # Skip if message creation failed
+            
+            # Add to current batch
+            if thread_id not in current_batch:
+                current_batch[thread_id] = []
+            current_batch[thread_id].append(msg)
+            
+            # If we have enough threads, sort and yield the batch
+            if len(current_batch) >= threads_per_batch:
+                thread_batch = []
+                for thread_messages in current_batch.values():
+                    # Sort messages by date
+                    thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date) or datetime.min.replace(tzinfo=timezone.utc))
+                    thread_batch.append(thread_messages)
+                yield thread_batch
+                current_batch = {}
+                
+        except Exception as e:
+            print(f"Error processing message {idx}: {e}")
+            with open('date_fmt_error.txt', 'a') as f:
+                f.write(f"Error in message {idx}: {e}\n")
             continue
-
-        xgmThrid = safe_strip(message['X-GM-THRID'])
-        igt = message.get('In-Reply-To')
-        inReplyTo = safe_strip(igt) if igt else ""
-        refs = message.get("References")
-        references = refs.split() if refs else [] 
-
-        # Extract content
-        content = extract_content(message)
-        content = clean_content(content)
-        
-        # Get Message-ID from header
-        message_id = message.get('Message-ID', '')
-        
-        # Create Message object
-        msg_obj = Message(to=to, sender=sender, subject=subject, date=date, 
-                         content=content, x_gmail_labels=[], 
-                         x_gm_thrid=xgmThrid, inReplyTo=inReplyTo, 
-                         references=references, message_id=message_id)
-
-        # Add message to appropriate thread in buffer
-        if xgmThrid:
-            if xgmThrid not in thread_buffer:
-                thread_buffer[xgmThrid] = []
-                threads_processed += 1
-            thread_buffer[xgmThrid].append(msg_obj)
-        else:
-            orphan_messages.append(msg_obj)
-
-        # When we've accumulated enough threads, sort them by date and yield
-        if threads_processed >= threads_per_batch:
-            # Sort messages in each thread by date
-            for thread_messages in thread_buffer.values():
-                thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date))
-            
-            # If we have orphan messages, add them as a special thread
-            if orphan_messages:
-                thread_buffer['orphan'] = sorted(orphan_messages, 
-                                               key=lambda msg: parse_date_for_sorting(msg.date))
-            
-            yield thread_buffer
-            
-            # Reset buffers
-            thread_buffer = {}
-            orphan_messages = []
-            threads_processed = 0
-
+    
     # Yield remaining messages
-    if thread_buffer or orphan_messages:
-        # Sort remaining threads
-        for thread_messages in thread_buffer.values():
-            thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date))
-        
-        if orphan_messages:
-            thread_buffer['orphan'] = sorted(orphan_messages, 
-                                           key=lambda msg: parse_date_for_sorting(msg.date))
-        
-        yield thread_buffer
+    if current_batch:
+        thread_batch = []
+        for thread_messages in current_batch.values():
+            # Sort messages by date
+            thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date) or datetime.min.replace(tzinfo=timezone.utc))
+            thread_batch.append(thread_messages)
+        yield thread_batch
 
 def process_thread_batch(thread_batch: dict[str, list[Message]], text_chunk_size: int, chunk_overlap: int) -> list[Document]:
     """Process a single batch of threads into documents.
