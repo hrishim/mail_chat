@@ -143,6 +143,8 @@ def parse_email_date(date_str: str) -> str:
         '%a %b %d %H:%M:%S %Y',      # Unix style: 'Thu Mar 19 14:16:11 2025'
         '%a, %d %b %Y %H:%M %z',     # Without seconds
         '%d %b %Y %H:%M %z',         # Without seconds and weekday
+        '%d %b %y %H:%M:%S',         # Short year format: '06 Apr 15 21:57:41'
+        '%d %b %Y %H:%M:%S',         # Same but with full year
     ]:
         try:
             dt = datetime.strptime(date_str, fmt)
@@ -218,6 +220,8 @@ def parse_date_for_sorting(date_str: str) -> datetime:
         '%a %b %d %H:%M:%S %Y',      # Unix style: 'Thu Mar 19 14:16:11 2025'
         '%a, %d %b %Y %H:%M %z',     # Without seconds
         '%d %b %Y %H:%M %z',         # Without seconds and weekday
+        '%d %b %y %H:%M:%S',         # Short year format: '06 Apr 15 21:57:41'
+        '%d %b %Y %H:%M:%S',         # Same but with full year
     ]:
         try:
             dt = datetime.strptime(date_str, fmt)
