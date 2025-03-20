@@ -106,32 +106,37 @@ def parse_email_date(date_str: str) -> str:
     if not date_str:
         raise ValueError("Empty date string")
 
-    # Clean up the date string
-    date_str = date_str.split('(')[0].strip()  # Remove (UTC) or similar parenthetical
-    if not date_str:
-        raise ValueError("Date string is empty after cleanup")
+    # Clean up parenthetical timezone names
+    date_str = re.sub(r'\s*\([^)]+\)\s*$', '', date_str)
+
+    # Map common timezone names to their UTC offsets
+    tz_map = {
+        'EDT': '-0400',  # Eastern Daylight Time
+        'EST': '-0500',  # Eastern Standard Time
+        'CDT': '-0500',  # Central Daylight Time
+        'CST': '-0600',  # Central Standard Time
+        'MDT': '-0600',  # Mountain Daylight Time
+        'MST': '-0700',  # Mountain Standard Time
+        'PDT': '-0700',  # Pacific Daylight Time
+        'PST': '-0800',  # Pacific Standard Time
+        'IST': '+0530',  # Indian Standard Time
+    }
     
-    # Handle Unix-style timestamps with timezone but no space
-    # e.g., "Fri Apr 17 00:16:47 2015+0530" -> "Fri Apr 17 00:16:47 2015 +0530"
-    unix_tz_match = re.search(r'(\d{4})[+-]\d{4}$', date_str)
-    if unix_tz_match:
-        year_pos = date_str.find(unix_tz_match.group(1))
-        if year_pos != -1:
-            year_end = year_pos + 4
-            date_str = date_str[:year_end] + ' ' + date_str[year_end:]
-    
-    # Fix invalid timezone offsets (like +0580)
-    tz_match = re.search(r'([+-])(\d{2})(\d{2})$', date_str)
-    if tz_match:
-        sign, hours, mins = tz_match.groups()
-        if int(mins) not in (0, 30):
-            # Round to nearest valid offset
-            if int(mins) > 30:
-                hours = str(int(hours) + 1).zfill(2)
-                mins = "00"
-            else:
-                mins = "30"
-        date_str = re.sub(r'[+-]\d{4}$', f'{sign}{hours}{mins}', date_str)
+    # Replace timezone names with their offsets
+    for tz_name, offset in tz_map.items():
+        if f" {tz_name}" in date_str:
+            date_str = date_str.replace(f" {tz_name}", f" {offset}")
+            break
+
+    # Handle non-standard timezone offsets
+    if (match := re.search(r'([+-])(\d{2}):?(\d{2})$', date_str)):
+        sign, hours, mins = match.groups()
+        if int(mins) > 30:
+            hours = str(int(hours) + 1).zfill(2)
+            mins = "00"
+        else:
+            mins = "30"
+        date_str = re.sub(r'[+-]\d{2}:?\d{2}$', f'{sign}{hours}{mins}', date_str)
     
     # Try various email date formats
     for fmt in [
@@ -145,6 +150,7 @@ def parse_email_date(date_str: str) -> str:
         '%d %b %Y %H:%M %z',         # Without seconds and weekday
         '%d %b %y %H:%M:%S',         # Short year format: '06 Apr 15 21:57:41'
         '%d %b %Y %H:%M:%S',         # Same but with full year
+        '%d %b %y %H:%M %z',         # Short year with timezone: '30 Jun 13 07:26 -0800'
     ]:
         try:
             dt = datetime.strptime(date_str, fmt)
@@ -162,48 +168,46 @@ def parse_email_date(date_str: str) -> str:
 
 @lru_cache(maxsize=10000)
 def parse_date_for_sorting(date_str: str) -> datetime:
-    """Parse a date string into a datetime object for sorting.
-    
-    Handles both our standard format and email format dates.
-    
-    Args:
-        date_str: Date string in either format
-        
-    Returns:
-        datetime object
-    """
+    """Parse date string into datetime object for sorting."""
     if not date_str:
         print("WARNING: Empty date string in parse_date_for_sorting")
         raise ValueError("Empty date string")
 
-    # Clean up the date string
-    date_str = date_str.split('(')[0].strip()  # Remove (UTC) or similar parenthetical
-    if not date_str:
-        print("WARNING: Date string is empty after cleanup in parse_date_for_sorting")
-        raise ValueError("Date string is empty after cleanup")
+    # Clean up parenthetical timezone names
+    date_str = re.sub(r'\s*\([^)]+\)\s*$', '', date_str)
+
+    # Map common timezone names to their UTC offsets
+    tz_map = {
+        'EDT': '-0400',  # Eastern Daylight Time
+        'EST': '-0500',  # Eastern Standard Time
+        'CDT': '-0500',  # Central Daylight Time
+        'CST': '-0600',  # Central Standard Time
+        'MDT': '-0600',  # Mountain Daylight Time
+        'MST': '-0700',  # Mountain Standard Time
+        'PDT': '-0700',  # Pacific Daylight Time
+        'PST': '-0800',  # Pacific Standard Time
+        'IST': '+0530',  # Indian Standard Time
+    }
     
-    # Handle Unix-style timestamps with timezone but no space
-    # e.g., "Fri Apr 17 00:16:47 2015+0530" -> "Fri Apr 17 00:16:47 2015 +0530"
-    unix_tz_match = re.search(r'(\d{4})[+-]\d{4}$', date_str)
-    if unix_tz_match:
-        year_pos = date_str.find(unix_tz_match.group(1))
-        if year_pos != -1:
-            year_end = year_pos + 4
-            date_str = date_str[:year_end] + ' ' + date_str[year_end:]
-    
-    # Fix invalid timezone offsets (like +0580)
-    tz_match = re.search(r'([+-])(\d{2})(\d{2})$', date_str)
-    if tz_match:
-        sign, hours, mins = tz_match.groups()
-        if int(mins) not in (0, 30):
-            # Round to nearest valid offset
-            if int(mins) > 30:
-                hours = str(int(hours) + 1).zfill(2)
-                mins = "00"
-            else:
-                mins = "30"
-        date_str = re.sub(r'[+-]\d{4}$', f'{sign}{hours}{mins}', date_str)
-    
+    # Replace timezone names with their offsets
+    for tz_name, offset in tz_map.items():
+        if f" {tz_name}" in date_str:
+            date_str = date_str.replace(f" {tz_name}", f" {offset}")
+            break
+
+    # Handle non-standard timezone offsets
+    if (match := re.search(r'([+-])(\d{2}):?(\d{2})$', date_str)):
+        sign, hours, mins = match.groups()
+        if int(mins) > 30:
+            hours = str(int(hours) + 1).zfill(2)
+            mins = "00"
+        else:
+            mins = "30"
+        date_str = re.sub(r'[+-]\d{2}:?\d{2}$', f'{sign}{hours}{mins}', date_str)
+
+    # Clean up whitespace
+    date_str = re.sub(r'\s+', ' ', date_str)
+
     # Try our standard format first
     try:
         return datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S%z')
@@ -222,6 +226,7 @@ def parse_date_for_sorting(date_str: str) -> datetime:
         '%d %b %Y %H:%M %z',         # Without seconds and weekday
         '%d %b %y %H:%M:%S',         # Short year format: '06 Apr 15 21:57:41'
         '%d %b %Y %H:%M:%S',         # Same but with full year
+        '%d %b %y %H:%M %z',         # Short year with timezone: '30 Jun 13 07:26 -0800'
     ]:
         try:
             dt = datetime.strptime(date_str, fmt)
@@ -232,6 +237,18 @@ def parse_date_for_sorting(date_str: str) -> datetime:
             return dt
         except ValueError:
             continue
+    
+    # Try special handling for GMT+offset format
+    gmt_match = re.match(r'(\w{3} \w{3} \d{2} \d{2}:\d{2}:\d{2}) GMT([+-]\d{2}):?(\d{2}) (\d{4})', date_str)
+    if gmt_match:
+        try:
+            base_str, tz_hour, tz_min, year = gmt_match.groups()
+            # Convert to standard format with offset
+            reformatted = f"{base_str} {year} {tz_hour}{tz_min}"
+            dt = datetime.strptime(reformatted, '%a %b %d %H:%M:%S %Y %z')
+            return dt
+        except ValueError:
+            pass
     
     print(f"WARNING: Failed to parse date string in parse_date_for_sorting: '{date_str}'")
     print(f"Date string length: {len(date_str)}")
@@ -488,9 +505,7 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_
         igt = message.get('In-Reply-To')
         inReplyTo = safe_strip(igt) if igt else ""
         refs = message.get("References")
-        references = refs.split() if refs else []
-        labels = message.get("X-Gmail-Labels")
-        x_gmail_labels: list[str] = safe_strip(labels).split(',') if labels else [] 
+        references = refs.split() if refs else [] 
 
         # Extract content
         content = extract_content(message)
@@ -501,7 +516,7 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_
         
         # Create Message object
         msg_obj = Message(to=to, sender=sender, subject=subject, date=date, 
-                         content=content, x_gmail_labels=x_gmail_labels, 
+                         content=content, x_gmail_labels=[], 
                          x_gm_thrid=xgmThrid, inReplyTo=inReplyTo, 
                          references=references, message_id=message_id)
 

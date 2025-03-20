@@ -21,5 +21,7 @@ var/
 *.egg
 .DS_Store
 mail_vectordb/
+hrishim_vectordb/
+processing_checkpoint.json
 junk.txt
 *.swp
