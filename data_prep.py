@@ -622,7 +622,11 @@ def main():
     if vectordb_dir.exists() and any(vectordb_dir.iterdir()):
         print(f"Loading existing vector store from {vectordb_dir}...")
         try:
-            vectorstore = FAISS.load_local(str(vectordb_dir), embeddings)
+            vectorstore = FAISS.load_local(
+                str(vectordb_dir),
+                embeddings,
+                allow_dangerous_deserialization=True  # Safe since we created these files
+            )
             print("Existing vector store loaded successfully")
         except Exception as e:
             print(f"Warning: Could not load existing vector store: {e}")
