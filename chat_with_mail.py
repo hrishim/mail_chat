@@ -385,7 +385,6 @@ class EmailChatBot:
                 retrieval_time = time.perf_counter() - start_time
                 log_debug(f"  Retrieved {len(docs)} documents for reranking")
                 log_debug(f"  Initial retrieval time: {retrieval_time:.3f} seconds")
-                rerank_start = time.perf_counter()
             
             # Apply selected reranking method
             if rerank_method == "Mistral Reranker":
@@ -394,9 +393,7 @@ class EmailChatBot:
                 docs = self.cosine_rerank(query, docs, self.num_docs)
             
             if args.debugLog:
-                rerank_time = time.perf_counter() - rerank_start
                 log_debug(f"  Reranked to {len(docs)} documents")
-                log_debug(f"  Reranking time: {rerank_time:.3f} seconds")
         
         # Combine document contents
         context = "\n\n".join(doc.page_content for doc in docs)
@@ -574,7 +571,6 @@ class EmailChatBot:
                             log_debug(f"\nDocument {i+1}:")
                             log_debug(f"  Word count: {len(doc.page_content.split())}")
                             log_debug(f"  Content: {doc.page_content}")
-                        rerank_start = time.perf_counter()
                     
                     # Apply selected reranking method
                     if rerank_method == "Mistral Reranker":
@@ -583,13 +579,11 @@ class EmailChatBot:
                         reranked_docs = self.cosine_rerank(query, docs, self.num_docs)
                     
                     if args.debugLog:
-                        rerank_time = time.perf_counter() - rerank_start
                         # Log reranked results
                         total_words = sum(len(doc.page_content.split()) for doc in reranked_docs)
                         log_debug(f"\nAfter reranking:")
                         log_debug(f"  Number of documents: {len(reranked_docs)}")
                         log_debug(f"  Total words: {total_words}")
-                        log_debug(f"  Reranking time: {rerank_time:.3f} seconds")
                         for i, doc in enumerate(reranked_docs):
                             log_debug(f"\nDocument {i+1}:")
                             log_debug(f"  Word count: {len(doc.page_content.split())}")
