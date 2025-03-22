@@ -21,13 +21,39 @@ import numpy as np
 # Load environment variables
 load_dotenv()
 
+def is_valid_vectordb(path: Path) -> bool:
+    """Check if the given path is a valid FAISS vector database directory."""
+    return path.is_dir() and (path / "index.faiss").exists() and (path / "index.pkl").exists()
+
 class EmailChatBot:
-    def __init__(self, vectordb_path: str = "./mail_vectordb"):
+    def __init__(self, vectordb_path: Optional[str] = None, user_name: Optional[str] = None, user_email: Optional[str] = None,
+                 num_docs: int = 4, rerank_multiplier: int = 3):
+        # Use VECTOR_DB from env if vectordb_path not provided
+        if vectordb_path is None:
+            vectordb_path = os.getenv("VECTOR_DB", "./mail_vectordb")
+        
+        # Get user details from env if not provided
+        self.user_name = user_name or os.getenv("USER_FULLNAME", "YOUR_NAME")
+        self.user_email = user_email or os.getenv("USER_EMAIL", "YOUR_EMAIL")
+        
+        # Document retrieval settings
+        self.num_docs = num_docs
+        self.rerank_multiplier = rerank_multiplier
+        
         self.vectordb_path = Path(vectordb_path)
+        if not self.vectordb_path.exists():
+            raise ValueError(f"Vector database directory '{vectordb_path}' does not exist")
+        if not is_valid_vectordb(self.vectordb_path):
+            raise ValueError(f"'{vectordb_path}' is not a valid FAISS vector database directory")
+        
         self.chat_history: List[Dict[str, str]] = []
         self.llm_url = "http://0.0.0.0:8000/v1/completions"
         self.container_status = "stopped"
         self.last_retrieved_docs = None  # Store last retrieved documents
+        
+        # Initialize embeddings
+        self.embeddings = NVIDIAEmbeddings(model="NV-Embed-QA")
+        
         self.setup_components()
 
     @property
@@ -37,6 +63,7 @@ class EmailChatBot:
     def get_container_status(self) -> str:
         """Get the current status of the LLM container."""
         try:
+            # First check if container is running
             result = subprocess.run(
                 ["docker", "ps", "-a", "--filter", f"name={self.container_name}", "--format", "{{.Status}}"],
                 capture_output=True,
@@ -44,19 +71,28 @@ class EmailChatBot:
             )
             if not result.stdout.strip():
                 return "stopped"
+            
             status = result.stdout.strip().lower()
-            if "up" in status:
-                # Check if it's still initializing
-                logs = subprocess.run(
-                    ["docker", "logs", self.container_name],
-                    capture_output=True,
-                    text=True
-                ).stdout
-                if "Uvicorn running on http://0.0.0.0:8000" in logs:
-                    return "ready"
+            if "up" not in status:
+                return "stopped"
+            
+            # Container is up, now check if model is ready using health endpoint
+            try:
+                response = requests.get("http://0.0.0.0:8000/v1/health/ready", timeout=2)
+                print(f"Health endpoint status code: {response.status_code}")
+                if response.status_code == 200:
+                    data = response.json()
+                    print(f"Health endpoint response: {data}")
+                    if data.get("message") == "Service is ready.":
+                        return "ready"
                 return "starting"
-            return "stopped"
-        except:
+            except (requests.exceptions.RequestException, ValueError) as e:
+                # If health check fails or invalid JSON, model is still starting
+                print(f"Health endpoint error: {str(e)}")
+                return "starting"
+                
+        except Exception as e:
+            print(f"Error checking container status: {str(e)}")
             return "unknown"
 
     def start_container(self) -> str:
@@ -113,16 +149,6 @@ class EmailChatBot:
 
     def setup_components(self):
         """Initialize the RAG components."""
-        if not self.vectordb_path.exists():
-            raise ValueError(f"Vector database not found at {self.vectordb_path}")
-
-        # Initialize embeddings
-        self.embeddings = NVIDIAEmbeddings(
-            model="NV-Embed-QA",
-            truncate="END",
-            api_key=os.getenv('NGC_API_KEY')
-        )
-
         # Load the vector store
         self.vectorstore = FAISS.load_local(
             self.vectordb_path.as_posix(),
@@ -146,17 +172,17 @@ class EmailChatBot:
 
         # Create a custom QA prompt with user identity
         custom_qa_prompt = PromptTemplate(
-            template="""You are a helpful AI assistant that answers questions about the user's email history.
-            The user's name is Perf Opt and their email address is perfopt0@gmail.com.
-            When they ask questions using "I" or "me", it refers to Perf Opt (perfopt0@gmail.com).
+            template=f"""You are a helpful AI assistant that answers questions about the user's email history.
+            The user's name is {self.user_name} and their email address is {self.user_email}.
+            When they ask questions using "I" or "me", it refers to {self.user_name} ({self.user_email}).
             
             Use the following pieces of context to answer the question at the end.
             If you don't know the answer, just say that you don't know, don't try to make up an answer.
             Keep answers short and direct.
             
-            Context: {context}
+            Context: {{context}}
             
-            Question: {question}
+            Question: {{question}}
             
             Answer:""",
             input_variables=["context", "question"]
@@ -172,9 +198,9 @@ class EmailChatBot:
 
         # Create the simple RAG prompt
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a helpful AI assistant that answers questions about the user's email history. 
-            The user's name is Perf Opt and their email address is perfopt0@gmail.com.
-            When they ask questions using "I" or "me", it refers to Perf Opt (perfopt0@gmail.com).
+            ("system", f"""You are a helpful AI assistant that answers questions about the user's email history. 
+            The user's name is {self.user_name} and their email address is {self.user_email}.
+            When they ask questions using "I" or "me", it refers to {self.user_name} ({self.user_email}).
             
             Use the following email content to answer the user's question.
             
@@ -184,9 +210,9 @@ class EmailChatBot:
             3. Keep answers short and direct
             4. Do not include system messages, UI prompts, or follow-up questions
             
-            Context from emails: {context}"""),
+            Context from emails: {{context}}"""),
             MessagesPlaceholder(variable_name="chat_history"),
-            ("human", "{question}")
+            ("human", "{{question}}")
         ])
 
     def query_llm(self, prompt: str, max_tokens: int = 512) -> str:
@@ -231,14 +257,14 @@ class EmailChatBot:
                 messages.append(AIMessage(content=msg["content"]))
         return messages
 
-    def get_relevant_context(self, query: str, k: int = 4, use_rerank: bool = False, rerank_multiplier: int = 3) -> str:
+    def get_relevant_context(self, query: str, use_rerank: bool = False) -> str:
         """Retrieve relevant email context for the query."""
         if not use_rerank:
             # Original method
-            docs = self.vectorstore.similarity_search(query, k=k)
+            docs = self.vectorstore.similarity_search(query, k=self.num_docs)
         else:
             # Get more candidates for reranking
-            docs = self.vectorstore.similarity_search(query, k=k*rerank_multiplier)
+            docs = self.vectorstore.similarity_search(query, k=self.num_docs*self.rerank_multiplier)
             
             # Compute query embedding once
             query_embedding = self.embeddings.embed_query(query)
@@ -255,8 +281,9 @@ class EmailChatBot:
                 )
                 scores.append((similarity, doc))
             
-            # Sort by scores and take top k
-            docs = [doc for _, doc in sorted(scores, key=lambda x: x[0], reverse=True)[:k]]
+            # Sort by similarity score and take top k
+            sorted_docs = sorted(scores, key=lambda x: x[0], reverse=True)
+            docs = [doc for _, doc in sorted_docs[:self.num_docs]]
         
         # Store the retrieved documents
         self.last_retrieved_docs = docs
@@ -324,8 +351,10 @@ class EmailChatBot:
                         )
                         scores.append((similarity, doc))
                     
+                    # Sort by similarity score (first element of tuple)
+                    sorted_results = sorted(scores, key=lambda x: x[0], reverse=True)
                     # Return top k reranked docs
-                    return [doc for _, doc in sorted(scores, reverse=True)[:k]]
+                    return [doc for _, doc in sorted_results[:k]]
                 
                 retriever._get_relevant_documents = reranked_get_relevant_docs
                 self.qa.retriever = retriever
@@ -354,24 +383,77 @@ class EmailChatBot:
 
 def create_chat_interface():
     """Create and launch the Gradio interface."""
-    # Initialize the chat bot
-    bot = EmailChatBot()
+    # Get default values from env
+    default_vectordb = os.getenv("VECTOR_DB", "./mail_vectordb")
+    default_user_name = os.getenv("USER_FULLNAME", "YOUR_NAME")
+    default_user_email = os.getenv("USER_EMAIL", "YOUR_EMAIL")
     
-    # Define the interface
+    # Create initial bot instance just to check container status
+    initial_bot = EmailChatBot(
+        vectordb_path=default_vectordb,
+        user_name=default_user_name,
+        user_email=default_user_email
+    )
+    initial_status = initial_bot.get_container_status()
+    
     with gr.Blocks(title="Email Chat Assistant") as interface:
         gr.Markdown("# Email Chat Assistant\nChat with your email history using AI")
         
         with gr.Row():
             with gr.Column(scale=2):
+                with gr.Group():
+                    vectordb_path = gr.Textbox(
+                        label="Vector Database Directory",
+                        placeholder="Enter vector database directory path",
+                        value=default_vectordb,
+                    )
+                    gr.Markdown("*Value loaded from .env file*" if os.getenv("VECTOR_DB") else "*Using default path*")
+                    
+                    user_name = gr.Textbox(
+                        label="User Name",
+                        placeholder="Enter your name",
+                        value=default_user_name,
+                    )
+                    gr.Markdown("*Value loaded from .env file*" if os.getenv("USER_FULLNAME") else "*Using default value*")
+                    
+                    user_email = gr.Textbox(
+                        label="User Email",
+                        placeholder="Enter your email",
+                        value=default_user_email,
+                    )
+                    gr.Markdown("*Value loaded from .env file*" if os.getenv("USER_EMAIL") else "*Using default value*")
+                    
+                    num_docs = gr.Slider(
+                        label="Number of Documents to Retrieve",
+                        minimum=1,
+                        maximum=10,
+                        value=4,
+                        step=1
+                    )
+                    rerank_multiplier = gr.Slider(
+                        label="Reranking Multiplier",
+                        minimum=1,
+                        maximum=10,
+                        value=3,
+                        step=1
+                    )
+                    
+                    with gr.Row():
+                        update_params = gr.Button("Update Parameters", variant="primary")
+                        reset_params = gr.Button("Reset to Default Values", variant="secondary")
+                
                 container_status = gr.Textbox(
                     label="LLM Container Status",
-                    value=bot.get_container_status(),
+                    value=initial_status,
                     interactive=False
                 )
             with gr.Column(scale=1):
                 start_btn = gr.Button("Start LLM", variant="primary")
                 stop_btn = gr.Button("Stop LLM", variant="secondary")
                 refresh_status = gr.Button("Refresh Status", variant="secondary")
+        
+        # Initialize bot - use initial bot if container is already running
+        bot = initial_bot if initial_status in ["ready", "starting"] else None
         
         retrieval_method = gr.Radio(
             choices=["Simple RAG", "Conversational Chain"],
@@ -396,17 +478,70 @@ def create_chat_interface():
             clear = gr.Button("Clear History")
         
         def update_status():
+            if bot is None:
+                return "stopped"
             return bot.get_container_status()
         
-        def start_llm():
-            result = bot.start_container()
-            return result, update_status()
+        def reset_to_defaults():
+            """Reset all parameters to their default values from .env"""
+            # Re-read from env in case .env was modified
+            fresh_defaults = [
+                os.getenv("VECTOR_DB", "./mail_vectordb"),
+                os.getenv("USER_FULLNAME", "YOUR_NAME"),
+                os.getenv("USER_EMAIL", "YOUR_EMAIL"),
+                4,
+                3
+            ]
+            return fresh_defaults
+
+        def update_parameters(vdb_path, uname, uemail, num_docs, rerank_multiplier):
+            """Update bot with new parameters if it exists"""
+            nonlocal bot
+            if bot is not None:
+                try:
+                    # Create new bot with updated parameters
+                    new_bot = EmailChatBot(
+                        vectordb_path=vdb_path.strip(),
+                        user_name=uname.strip(),
+                        user_email=uemail.strip(),
+                        num_docs=num_docs,
+                        rerank_multiplier=rerank_multiplier
+                    )
+                    # If creation successful, update the bot
+                    bot = new_bot
+                    return "Parameters updated successfully"
+                except ValueError as e:
+                    return str(e)
+            return "No active bot session. Start LLM to apply parameters."
+
+        def start_llm(vdb_path, uname, uemail, num_docs, rerank_multiplier):
+            nonlocal bot
+            try:
+                # Use provided values
+                bot = EmailChatBot(
+                    vectordb_path=vdb_path.strip(),
+                    user_name=uname.strip(),
+                    user_email=uemail.strip(),
+                    num_docs=num_docs,
+                    rerank_multiplier=rerank_multiplier
+                )
+                result = bot.start_container()
+                return [result, update_status()]
+            except ValueError as e:
+                return [str(e), "stopped"]
         
         def stop_llm():
-            result = bot.stop_container()
-            return result, update_status()
+            nonlocal bot
+            if bot is not None:
+                result = bot.stop_container()
+                bot = None
+                return [result, "stopped"]
+            return ["Bot not initialized", "stopped"]
         
         def respond(message, history, method, use_rerank):
+            if bot is None:
+                return "", history + [{"role": "assistant", "content": "Please start the LLM container first"}]
+                
             status = bot.get_container_status()
             if status != "ready":
                 return "", history + [{"role": "assistant", "content": f"Please wait for the LLM container to be ready before sending messages. Current status: {status}"}]
@@ -418,16 +553,35 @@ def create_chat_interface():
             
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": bot_response})
+            
             return "", history
         
         def clear_chat_history():
-            bot.clear_history()
+            if bot is not None:
+                bot.clear_history()
             return None
         
         # Set up event handlers
-        start_btn.click(start_llm, outputs=[container_status, container_status])
-        stop_btn.click(stop_llm, outputs=[container_status, container_status])
-        refresh_status.click(update_status, outputs=container_status)
+        start_btn.click(
+            start_llm,
+            [vectordb_path, user_name, user_email, num_docs, rerank_multiplier],
+            [container_status, container_status]
+        )
+        stop_btn.click(
+            stop_llm,
+            None,
+            [container_status, container_status]
+        )
+        update_params.click(
+            update_parameters,
+            [vectordb_path, user_name, user_email, num_docs, rerank_multiplier],
+            container_status
+        )
+        reset_params.click(
+            reset_to_defaults,
+            None,
+            [vectordb_path, user_name, user_email, num_docs, rerank_multiplier]
+        )
         submit.click(respond, [msg, chatbot, retrieval_method, use_rerank], [msg, chatbot])
         clear.click(clear_chat_history, None, chatbot)
         msg.submit(respond, [msg, chatbot, retrieval_method, use_rerank], [msg, chatbot])
