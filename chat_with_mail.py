@@ -552,7 +552,7 @@ class EmailChatBot:
             
             if rerank_method != "No Reranking":
                 # Create a custom retriever that uses reranking
-                def get_relevant_documents(query: str) -> List[Document]:
+                def get_relevant_documents(query: str, *, run_manager=None) -> List[Document]:
                     if args.debugLog:
                         start_time = time.perf_counter()
                     
