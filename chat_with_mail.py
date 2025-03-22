@@ -64,12 +64,13 @@ class EmailChatBot:
         self.user_email = user_email or os.getenv("USER_EMAIL", "YOUR_EMAIL")
         
         # Log initial parameters
-        log_debug("Initializing EmailChatBot:")
-        log_debug(f"  Database folder: {vectordb_path}")
-        log_debug(f"  User name: {self.user_name}")
-        log_debug(f"  User email: {self.user_email}")
-        log_debug(f"  Number of documents: {num_docs}")
-        log_debug(f"  Reranking multiplier: {rerank_multiplier}")
+        if args.debugLog:
+            log_debug("Initializing EmailChatBot:")
+            log_debug(f"  Database folder: {vectordb_path}")
+            log_debug(f"  User name: {self.user_name}")
+            log_debug(f"  User email: {self.user_email}")
+            log_debug(f"  Number of documents: {num_docs}")
+            log_debug(f"  Reranking multiplier: {rerank_multiplier}")
         
         # Document retrieval settings
         self.num_docs = num_docs
@@ -125,20 +126,24 @@ class EmailChatBot:
             # Container is up, now check if model is ready using health endpoint
             try:
                 response = requests.get("http://0.0.0.0:8000/v1/health/ready", timeout=2)
-                log_debug(f"Health endpoint status code: {response.status_code}")
+                if args.debugLog:
+                    log_debug(f"Health endpoint status code: {response.status_code}")
                 if response.status_code == 200:
                     data = response.json()
-                    log_debug(f"Health endpoint response: {data}")
+                    if args.debugLog:
+                        log_debug(f"Health endpoint response: {data}")
                     if data.get("message") == "Service is ready.":
                         return "ready"
                 return "starting"
             except (requests.exceptions.RequestException, ValueError) as e:
                 # If health check fails or invalid JSON, model is still starting
-                log_debug(f"Health endpoint error: {str(e)}")
+                if args.debugLog:
+                    log_debug(f"Health endpoint error: {str(e)}")
                 return "starting"
                 
         except Exception as e:
-            log_debug(f"Error checking container status: {str(e)}")
+            if args.debugLog:
+                log_debug(f"Error checking container status: {str(e)}")
             return "unknown"
 
     def get_reranker_status(self) -> str:
@@ -167,7 +172,8 @@ class EmailChatBot:
                 return "starting"
                 
         except Exception as e:
-            log_debug(f"Error checking reranker status: {str(e)}")
+            if args.debugLog:
+                log_debug(f"Error checking reranker status: {str(e)}")
             return "unknown"
 
     def start_container(self) -> str:
@@ -211,6 +217,8 @@ class EmailChatBot:
             
             return "Container starting..."
         except Exception as e:
+            if args.debugLog:
+                log_debug(f"Error starting container: {str(e)}")
             return f"Error starting container: {str(e)}"
 
     def stop_container(self) -> str:
@@ -220,6 +228,8 @@ class EmailChatBot:
             subprocess.run(["docker", "rm", self.container_name], check=True)
             return "Container stopped"
         except Exception as e:
+            if args.debugLog:
+                log_debug(f"Error stopping container: {str(e)}")
             return f"Error stopping container: {str(e)}"
 
     def start_reranker(self) -> str:
@@ -252,8 +262,12 @@ class EmailChatBot:
             
             return "Starting reranker container..."
         except subprocess.CalledProcessError as e:
+            if args.debugLog:
+                log_debug(f"Error starting reranker: {str(e)}")
             return f"Error starting reranker: {str(e)}"
         except Exception as e:
+            if args.debugLog:
+                log_debug(f"Unexpected error starting reranker: {str(e)}")
             return f"Unexpected error starting reranker: {str(e)}"
 
     def stop_reranker(self) -> str:
@@ -266,14 +280,18 @@ class EmailChatBot:
             subprocess.run(["docker", "rm", self.reranker_container_name], check=True)
             return "Reranker stopped successfully"
         except Exception as e:
+            if args.debugLog:
+                log_debug(f"Error stopping reranker: {str(e)}")
             return f"Error stopping reranker: {str(e)}"
 
     def mistral_rerank(self, query: str, docs: List[Document], k: int) -> List[Document]:
         """Rerank documents using NV-RerankQA-Mistral-4B-v3."""
-        log_debug(f"\nReranking with Mistral reranker:")
-        log_debug(f"  Query: {query}")
-        log_debug(f"  Input documents: {len(docs)}")
-        log_debug(f"  Target documents: {k}")
+        if args.debugLog:
+            log_debug(f"\nReranking with Mistral reranker:")
+            log_debug(f"  Query: {query}")
+            log_debug(f"  Input documents: {len(docs)}")
+            log_debug(f"  Target documents: {k}")
+            start_time = time.perf_counter()
         
         # Prepare documents for reranking
         passages = [doc.page_content for doc in docs]
@@ -284,34 +302,38 @@ class EmailChatBot:
                 query=query,
                 passages=passages
             )
-            
-            # Sort by score
-            reranked_docs = [doc for _, doc in sorted(
-                zip(scores, docs),
-                key=lambda x: x[0],
-                reverse=True
-            )][:k]
-            
-            # Log reranking results
-            log_debug("\nReranking results:")
-            for i, (doc, score) in enumerate(zip(reranked_docs, sorted(scores, reverse=True)[:k])):
-                log_debug(f"\nDocument {i+1}:")
-                log_debug(f"  Score: {score:.4f}")
-                log_debug(f"  Word count: {len(doc.page_content.split())}")
-                log_debug(f"  Content: {doc.page_content}")
+            if args.debugLog:
+                rerank_time = time.perf_counter() - start_time
+                # Sort by score
+                reranked_docs = [doc for _, doc in sorted(
+                    zip(scores, docs),
+                    key=lambda x: x[0],
+                    reverse=True
+                )][:k]
+                # Log reranking results
+                log_debug("\nReranking results:")
+                log_debug(f"  Reranking time: {rerank_time:.3f} seconds")
+                for i, (doc, score) in enumerate(zip(reranked_docs, sorted(scores, reverse=True)[:k])):
+                    log_debug(f"\nDocument {i+1}:")
+                    log_debug(f"  Score: {score:.4f}")
+                    log_debug(f"  Word count: {len(doc.page_content.split())}")
+                    log_debug(f"  Content: {doc.page_content}")
             
             return reranked_docs
         except Exception as e:
-            log_debug(f"Error in Mistral reranking: {str(e)}")
-            log_debug(f"Falling back to cosine similarity reranking")
+            if args.debugLog:
+                log_debug(f"Error in Mistral reranking: {str(e)}")
+                log_debug(f"Falling back to cosine similarity reranking")
             return self.cosine_rerank(query, docs, k)
 
     def cosine_rerank(self, query: str, docs: List[Document], k: int) -> List[Document]:
         """Rerank documents using cosine similarity."""
-        log_debug(f"\nReranking with cosine similarity:")
-        log_debug(f"  Query: {query}")
-        log_debug(f"  Input documents: {len(docs)}")
-        log_debug(f"  Target documents: {k}")
+        if args.debugLog:
+            log_debug(f"\nReranking with cosine similarity:")
+            log_debug(f"  Query: {query}")
+            log_debug(f"  Input documents: {len(docs)}")
+            log_debug(f"  Target documents: {k}")
+            start_time = time.perf_counter()
         
         # Get embeddings
         query_embedding = self.embeddings.embed_query(query)
@@ -323,48 +345,63 @@ class EmailChatBot:
             (np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding))
             for doc_embedding in doc_embeddings
         ]
-        
-        # Sort by similarity
-        reranked_docs = [doc for _, doc in sorted(
-            zip(similarities, docs),
-            key=lambda x: x[0],
-            reverse=True
-        )][:k]
-        
-        # Log reranking results
-        log_debug("\nReranking results:")
-        for i, (doc, sim) in enumerate(zip(reranked_docs, sorted(similarities, reverse=True)[:k])):
-            log_debug(f"\nDocument {i+1}:")
-            log_debug(f"  Similarity score: {sim:.4f}")
-            log_debug(f"  Word count: {len(doc.page_content.split())}")
-            log_debug(f"  Content: {doc.page_content}")
+        if args.debugLog:
+            rerank_time = time.perf_counter() - start_time
+            # Sort by similarity
+            reranked_docs = [doc for _, doc in sorted(
+                zip(similarities, docs),
+                key=lambda x: x[0],
+                reverse=True
+            )][:k]
+            # Log reranking results
+            log_debug("\nReranking results:")
+            log_debug(f"  Reranking time: {rerank_time:.3f} seconds")
+            for i, (doc, sim) in enumerate(zip(reranked_docs, sorted(similarities, reverse=True)[:k])):
+                log_debug(f"\nDocument {i+1}:")
+                log_debug(f"  Similarity score: {sim:.4f}")
+                log_debug(f"  Word count: {len(doc.page_content.split())}")
+                log_debug(f"  Content: {doc.page_content}")
         
         return reranked_docs
 
     def get_relevant_context(self, query: str, rerank_method: str = "Cosine Similarity") -> str:
         """Retrieve relevant email context for the query."""
-        log_debug(f"\nRetrieving context for query: {query}")
-        log_debug(f"  Use reranking: {rerank_method != 'No Reranking'}")
+        if args.debugLog:
+            log_debug(f"\nRetrieving context for query: {query}")
+            log_debug(f"  Use reranking: {rerank_method != 'No Reranking'}")
+            start_time = time.perf_counter()
         
         if rerank_method == "No Reranking":
             # Original method without reranking
             docs = self.vectorstore.similarity_search(query, k=self.num_docs)
-            log_debug(f"  Retrieved {len(docs)} documents without reranking")
+            if args.debugLog:
+                retrieval_time = time.perf_counter() - start_time
+                log_debug(f"  Retrieved {len(docs)} documents without reranking")
+                log_debug(f"  Retrieval time: {retrieval_time:.3f} seconds")
         else:
             # Get more candidates for reranking
             docs = self.vectorstore.similarity_search(query, k=self.num_docs * self.rerank_multiplier)
-            log_debug(f"  Retrieved {len(docs)} documents for reranking")
+            if args.debugLog:
+                retrieval_time = time.perf_counter() - start_time
+                log_debug(f"  Retrieved {len(docs)} documents for reranking")
+                log_debug(f"  Initial retrieval time: {retrieval_time:.3f} seconds")
+                rerank_start = time.perf_counter()
             
             # Apply selected reranking method
             if rerank_method == "Mistral Reranker":
                 docs = self.mistral_rerank(query, docs, self.num_docs)
             else:  # Cosine Similarity
                 docs = self.cosine_rerank(query, docs, self.num_docs)
-            log_debug(f"  Reranked to {len(docs)} documents")
+            
+            if args.debugLog:
+                rerank_time = time.perf_counter() - rerank_start
+                log_debug(f"  Reranked to {len(docs)} documents")
+                log_debug(f"  Reranking time: {rerank_time:.3f} seconds")
         
         # Combine document contents
         context = "\n\n".join(doc.page_content for doc in docs)
-        log_debug(f"  Final context word count: {len(context.split())}")
+        if args.debugLog:
+            log_debug(f"  Final context word count: {len(context.split())}")
         return context
 
     def setup_components(self):
@@ -437,13 +474,13 @@ class EmailChatBot:
 
     def update_parameters(self, vectordb_path: str, user_name: str, user_email: str, num_docs: int, rerank_multiplier: int) -> None:
         """Update bot parameters and reinitialize components if needed."""
-        # Log parameter changes
-        log_debug("Updating parameters:")
-        log_debug(f"  Database folder: {vectordb_path}")
-        log_debug(f"  User name: {user_name}")
-        log_debug(f"  User email: {user_email}")
-        log_debug(f"  Number of documents: {num_docs}")
-        log_debug(f"  Reranking multiplier: {rerank_multiplier}")
+        if args.debugLog:
+            log_debug("Updating parameters:")
+            log_debug(f"  Database folder: {vectordb_path}")
+            log_debug(f"  User name: {user_name}")
+            log_debug(f"  User email: {user_email}")
+            log_debug(f"  Number of documents: {num_docs}")
+            log_debug(f"  Reranking multiplier: {rerank_multiplier}")
         
         self.vectordb_path = Path(vectordb_path)
         self.user_name = user_name
@@ -457,7 +494,8 @@ class EmailChatBot:
     def query_llm(self, prompt: str, max_tokens: int = 512) -> str:
         """Query the local LLM."""
         try:
-            log_debug(f"Sending request to {self.llm_url}")
+            if args.debugLog:
+                log_debug(f"Sending request to {self.llm_url}")
             response = requests.post(
                 self.llm_url,
                 headers={"Content-Type": "application/json"},
@@ -468,22 +506,27 @@ class EmailChatBot:
                 },
                 timeout=30
             )
-            log_debug(f"Response status code: {response.status_code}")
+            if args.debugLog:
+                log_debug(f"Response status code: {response.status_code}")
             response.raise_for_status()
             json_response = response.json()
-            log_debug(f"Response JSON: {json_response}")
+            if args.debugLog:
+                log_debug(f"Response JSON: {json_response}")
             return json_response["choices"][0]["text"].strip()
         except requests.exceptions.Timeout:
-            log_debug("LLM request timed out")
+            if args.debugLog:
+                log_debug("LLM request timed out")
             return "I apologize, but the request timed out. Please try again."
         except requests.exceptions.ConnectionError:
-            log_debug("Connection error to LLM")
+            if args.debugLog:
+                log_debug("Connection error to LLM")
             return "I apologize, but I couldn't connect to the language model. Please ensure the LLM container is running."
         except Exception as e:
-            log_debug(f"Error querying LLM: {str(e)}")
-            log_debug(f"Error type: {type(e)}")
-            import traceback
-            log_debug(f"Traceback: {traceback.format_exc()}")
+            if args.debugLog:
+                log_debug(f"Error querying LLM: {str(e)}")
+                log_debug(f"Error type: {type(e)}")
+                import traceback
+                log_debug(f"Traceback: {traceback.format_exc()}")
             return "I apologize, but I encountered an error while processing your request."
 
     def format_chat_history(self) -> List[Dict[str, str]]:
@@ -499,63 +542,81 @@ class EmailChatBot:
     def chat_chain(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
         """Process a chat message using the ConversationalRetrievalChain."""
         try:
-            log_debug("\nProcessing query with chat_chain:")
-            log_debug(f"  Query: {message}")
-            log_debug(f"  Retrieval method: Conversational Chain")
-            log_debug(f"  Reranking method: {rerank_method}")
-            log_debug(f"  Number of documents: {self.num_docs}")
-            log_debug(f"  Reranking multiplier: {self.rerank_multiplier}")
+            if args.debugLog:
+                log_debug("\nProcessing query with chat_chain:")
+                log_debug(f"  Query: {message}")
+                log_debug(f"  Retrieval method: Conversational Chain")
+                log_debug(f"  Reranking method: {rerank_method}")
+                log_debug(f"  Number of documents: {self.num_docs}")
+                log_debug(f"  Reranking multiplier: {self.rerank_multiplier}")
             
             if rerank_method != "No Reranking":
                 # Create a custom retriever that uses reranking
-                retriever = self.vectorstore.as_retriever()
-                original_get_relevant_docs = retriever._get_relevant_documents
-                
-                def reranked_get_relevant_docs(*args, **kwargs):
-                    # Get more candidates
-                    k = kwargs.get('k', self.num_docs)  
-                    docs = original_get_relevant_docs(*args, **{**kwargs, 'k': k * self.rerank_multiplier})
+                def get_relevant_documents(query: str) -> List[Document]:
+                    if args.debugLog:
+                        start_time = time.perf_counter()
                     
-                    # Log initial retrieval
-                    total_words = sum(len(doc.page_content.split()) for doc in docs)
-                    log_debug(f"\nInitial retrieval:")
-                    log_debug(f"  Number of documents: {len(docs)}")
-                    log_debug(f"  Total words: {total_words}")
-                    for i, doc in enumerate(docs):
-                        log_debug(f"\nDocument {i+1}:")
-                        log_debug(f"  Word count: {len(doc.page_content.split())}")
-                        log_debug(f"  Content: {doc.page_content}")
+                    # Get initial candidates
+                    docs = self.vectorstore.similarity_search(
+                        query,
+                        k=self.num_docs * self.rerank_multiplier
+                    )
+                    
+                    if args.debugLog:
+                        retrieval_time = time.perf_counter() - start_time
+                        # Log initial retrieval
+                        total_words = sum(len(doc.page_content.split()) for doc in docs)
+                        log_debug(f"\nInitial retrieval:")
+                        log_debug(f"  Number of documents: {len(docs)}")
+                        log_debug(f"  Total words: {total_words}")
+                        log_debug(f"  Retrieval time: {retrieval_time:.3f} seconds")
+                        for i, doc in enumerate(docs):
+                            log_debug(f"\nDocument {i+1}:")
+                            log_debug(f"  Word count: {len(doc.page_content.split())}")
+                            log_debug(f"  Content: {doc.page_content}")
+                        rerank_start = time.perf_counter()
                     
                     # Apply selected reranking method
                     if rerank_method == "Mistral Reranker":
-                        reranked_docs = self.mistral_rerank(message, docs, k)
+                        reranked_docs = self.mistral_rerank(query, docs, self.num_docs)
                     else:  # Cosine Similarity
-                        reranked_docs = self.cosine_rerank(message, docs, k)
+                        reranked_docs = self.cosine_rerank(query, docs, self.num_docs)
                     
-                    # Log reranked results
-                    total_words = sum(len(doc.page_content.split()) for doc in reranked_docs)
-                    log_debug(f"\nAfter reranking:")
-                    log_debug(f"  Number of documents: {len(reranked_docs)}")
-                    log_debug(f"  Total words: {total_words}")
-                    for i, doc in enumerate(reranked_docs):
-                        log_debug(f"\nDocument {i+1}:")
-                        log_debug(f"  Word count: {len(doc.page_content.split())}")
-                        log_debug(f"  Content: {doc.page_content}")
+                    if args.debugLog:
+                        rerank_time = time.perf_counter() - rerank_start
+                        # Log reranked results
+                        total_words = sum(len(doc.page_content.split()) for doc in reranked_docs)
+                        log_debug(f"\nAfter reranking:")
+                        log_debug(f"  Number of documents: {len(reranked_docs)}")
+                        log_debug(f"  Total words: {total_words}")
+                        log_debug(f"  Reranking time: {rerank_time:.3f} seconds")
+                        for i, doc in enumerate(reranked_docs):
+                            log_debug(f"\nDocument {i+1}:")
+                            log_debug(f"  Word count: {len(doc.page_content.split())}")
+                            log_debug(f"  Content: {doc.page_content}")
                     
                     return reranked_docs
                 
-                retriever._get_relevant_documents = reranked_get_relevant_docs
+                retriever = self.vectorstore.as_retriever()
+                retriever._get_relevant_documents = get_relevant_documents
                 self.qa.retriever = retriever
             else:
                 # Log that we're using standard retrieval
-                log_debug("\nUsing standard retrieval without reranking")
+                if args.debugLog:
+                    log_debug("\nUsing standard retrieval without reranking")
+            
+            # Generate response
+            if args.debugLog:
+                response_start = time.perf_counter()
             
             result = self.qa.invoke({"question": message})
             response = result.get("answer", "I apologize, but I couldn't generate a response.")
             
-            # Log the response
-            log_debug(f"\nGenerated response:")
-            log_debug(f"  {response}")
+            if args.debugLog:
+                response_time = time.perf_counter() - response_start
+                log_debug(f"\nGenerated response:")
+                log_debug(f"  Response time: {response_time:.3f} seconds")
+                log_debug(f"  {response}")
             
             # Update chat history
             self.chat_history.append({"role": "user", "content": message})
@@ -564,41 +625,53 @@ class EmailChatBot:
             return response
         except Exception as e:
             error_msg = f"Error in chat_chain: {str(e)}"
-            log_debug(error_msg)
-            log_debug(f"Error type: {type(e)}")
-            import traceback
-            log_debug(f"Traceback: {traceback.format_exc()}")
+            if args.debugLog:
+                log_debug(error_msg)
+                log_debug(f"Error type: {type(e)}")
+                import traceback
+                log_debug(f"Traceback: {traceback.format_exc()}")
             return "I apologize, but I encountered an error while processing your request."
 
     def chat_simple(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
-        """Process a chat message using simple RAG without conversation history."""
+        """Process a chat message using simple RAG."""
         try:
-            log_debug("\nProcessing query with chat_simple:")
-            log_debug(f"  Query: {message}")
-            log_debug(f"  Retrieval method: Simple RAG")
-            log_debug(f"  Reranking method: {rerank_method}")
-            log_debug(f"  Number of documents: {self.num_docs}")
-            log_debug(f"  Reranking multiplier: {self.rerank_multiplier}")
+            if args.debugLog:
+                log_debug("\nProcessing query with chat_simple:")
+                log_debug(f"  Query: {message}")
+                log_debug(f"  Retrieval method: Simple RAG")
+                log_debug(f"  Reranking method: {rerank_method}")
+                log_debug(f"  Number of documents: {self.num_docs}")
+                log_debug(f"  Reranking multiplier: {self.rerank_multiplier}")
+                context_start = time.perf_counter()
             
             # Get relevant context
-            context = self.get_relevant_context(message, rerank_method != "No Reranking")
+            context = self.get_relevant_context(message, rerank_method)
             
-            # Log the context
-            log_debug(f"\nRetrieved context:")
-            log_debug(f"  Word count: {len(context.split())}")
-            log_debug(f"  Content: {context}")
+            if args.debugLog:
+                context_time = time.perf_counter() - context_start
+                log_debug(f"\nRetrieved context:")
+                log_debug(f"  Context retrieval time: {context_time:.3f} seconds")
+                log_debug(f"  Word count: {len(context.split())}")
+                log_debug(f"  Content: {context}")
             
             # Generate response
             prompt = self.prompt.format(
                 context=context,
-                chat_history=self.format_chat_history(),
-                question=message
+                question=message,
+                user_name=self.user_name,
+                user_email=self.user_email
             )
+            
+            if args.debugLog:
+                response_start = time.perf_counter()
+            
             response = self.query_llm(prompt)
             
-            # Log the response
-            log_debug(f"\nGenerated response:")
-            log_debug(f"  {response}")
+            if args.debugLog:
+                response_time = time.perf_counter() - response_start
+                log_debug(f"\nGenerated response:")
+                log_debug(f"  Response time: {response_time:.3f} seconds")
+                log_debug(f"  {response}")
             
             # Update chat history
             self.chat_history.append({"role": "user", "content": message})
@@ -607,10 +680,11 @@ class EmailChatBot:
             return response
         except Exception as e:
             error_msg = f"Error in chat_simple: {str(e)}"
-            log_debug(error_msg)
-            log_debug(f"Error type: {type(e)}")
-            import traceback
-            log_debug(f"Traceback: {traceback.format_exc()}")
+            if args.debugLog:
+                log_debug(error_msg)
+                log_debug(f"Error type: {type(e)}")
+                import traceback
+                log_debug(f"Traceback: {traceback.format_exc()}")
             return "I apologize, but I encountered an error while processing your request."
 
     def clear_history(self) -> None:
