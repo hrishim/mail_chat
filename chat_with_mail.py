@@ -509,7 +509,32 @@ class EmailChatBot:
         return "Chat history cleared."
 
 def create_chat_interface():
-    """Create and launch the Gradio interface."""
+    # Track current parameter values
+    current_params = {
+        'vectordb_path': os.getenv("VECTOR_DB", "./mail_vectordb"),
+        'user_name': os.getenv("USER_FULLNAME", "YOUR_NAME"),
+        'user_email': os.getenv("USER_EMAIL", "YOUR_EMAIL"),
+        'num_docs': 4,
+        'rerank_multiplier': 3
+    }
+    
+    def has_unsaved_changes(vdb_path, uname, uemail, num_docs, rerank_multiplier):
+        """Check if any parameters have been changed from their current values."""
+        return (
+            vdb_path != current_params['vectordb_path'] or
+            uname != current_params['user_name'] or
+            uemail != current_params['user_email'] or
+            int(num_docs) != current_params['num_docs'] or
+            int(rerank_multiplier) != current_params['rerank_multiplier']
+        )
+    
+    def update_change_indicator(*params):
+        """Update the change indicator and update button state."""
+        has_changes = has_unsaved_changes(*params)
+        indicator = "⚠️ You have unsaved changes" if has_changes else ""
+        button_state = gr.update(interactive=has_changes)
+        return indicator, button_state
+    
     # Get default values from env
     default_vectordb = os.getenv("VECTOR_DB", "./mail_vectordb")
     default_user_name = os.getenv("USER_FULLNAME", "YOUR_NAME")
@@ -582,8 +607,10 @@ def create_chat_interface():
                         info="Multiplier for number of documents to consider for reranking"
                     )
                     
+                    change_indicator = gr.Markdown("")
+                    
                     with gr.Row():
-                        update_params = gr.Button("Update Parameters", variant="primary")
+                        update_params = gr.Button("Update Parameters", variant="primary", interactive=False)
                         reset_params = gr.Button("Reset to Default Values", variant="secondary")
             with gr.Column(scale=1):
                 pass
@@ -637,16 +664,33 @@ def create_chat_interface():
             return fresh_defaults
 
         def update_parameters(vdb_path, uname, uemail, num_docs, rerank_multiplier):
-            nonlocal bot
+            nonlocal bot, current_params
             if bot is not None:
+                # Convert slider values to integers
+                num_docs = int(num_docs)
+                rerank_multiplier = int(rerank_multiplier)
+                
                 # Update parameters on existing bot instead of creating new one
                 bot.update_parameters(vdb_path, uname, uemail, num_docs, rerank_multiplier)
-                return "Parameters updated successfully"
-            return "Bot not initialized"
+                # Update current parameters
+                current_params.update({
+                    'vectordb_path': vdb_path,
+                    'user_name': uname,
+                    'user_email': uemail,
+                    'num_docs': num_docs,
+                    'rerank_multiplier': rerank_multiplier
+                })
+                # Clear change indicator and disable update button
+                return ["Parameters updated successfully", "", gr.update(interactive=False)]
+            return ["Bot not initialized", "", gr.update(interactive=False)]
         
         def start_llm(vdb_path, uname, uemail, num_docs, rerank_multiplier):
-            nonlocal bot
+            nonlocal bot, current_params
             try:
+                # Convert slider values to integers
+                num_docs = int(num_docs)
+                rerank_multiplier = int(rerank_multiplier)
+                
                 # Use provided values
                 bot = EmailChatBot(
                     vectordb_path=vdb_path.strip(),
@@ -655,10 +699,18 @@ def create_chat_interface():
                     num_docs=num_docs,
                     rerank_multiplier=rerank_multiplier
                 )
+                # Update current parameters
+                current_params.update({
+                    'vectordb_path': vdb_path,
+                    'user_name': uname,
+                    'user_email': uemail,
+                    'num_docs': num_docs,
+                    'rerank_multiplier': rerank_multiplier
+                })
                 result = bot.start_container()
-                return [result, update_status()]
+                return [result, update_status(), "", gr.update(interactive=False)]
             except ValueError as e:
-                return [str(e), "stopped"]
+                return [str(e), "stopped", "", gr.update(interactive=False)]
         
         def stop_llm():
             nonlocal bot
@@ -717,7 +769,7 @@ def create_chat_interface():
         start_btn.click(
             start_llm,
             [vectordb_path, user_name, user_email, num_docs, rerank_multiplier],
-            [container_status, container_status]
+            [container_status, container_status, change_indicator, update_params]
         )
         stop_btn.click(
             stop_llm,
@@ -727,7 +779,7 @@ def create_chat_interface():
         update_params.click(
             update_parameters,
             [vectordb_path, user_name, user_email, num_docs, rerank_multiplier],
-            container_status
+            [container_status, change_indicator, update_params]
         )
         reset_params.click(
             reset_to_defaults,
@@ -756,6 +808,14 @@ def create_chat_interface():
         submit.click(respond, [msg, chatbot, retrieval_method, rerank_method], [msg, chatbot])
         clear.click(clear_chat_history, None, chatbot)
         msg.submit(respond, [msg, chatbot, retrieval_method, rerank_method], [msg, chatbot])
+        
+        # Connect parameter change events to update indicator
+        for param in [vectordb_path, user_name, user_email, num_docs, rerank_multiplier]:
+            param.change(
+                update_change_indicator,
+                inputs=[vectordb_path, user_name, user_email, num_docs, rerank_multiplier],
+                outputs=[change_indicator, update_params]
+            )
     
     # Launch the interface
     interface.launch(server_name="0.0.0.0", share=False)
