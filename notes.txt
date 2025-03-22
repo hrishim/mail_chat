@@ -13,8 +13,22 @@ curl -X 'POST' \
    -d '{"model": "meta/llama3-8b-instruct", "prompt": "Once upon a time", "max_tokens": 64}'
 
 
-Embedding Model: NV-Embed-QA
-LLM: meta-llama3-8b-instruct
+Embedding Model: NV-Embed-QA, 
+
+Reranking Models: 
+- nv-rerankqa-mistral-4b-v3: https://build.nvidia.com/nvidia/nv-rerankqa-mistral-4b-v3/
+- llama-3.2-nv-rerankqa-1b-v2: https://build.nvidia.com/nvidia/llama-3_2-nv-rerankqa-1b-v2
+
+
+LLM: 
+- meta-llama3-8b-instruct: 
+- llama-3_1-8b-instruct: https://build.nvidia.com/meta/llama-3_1-8b-instruct
+
+- deepseek-r1-distill-llama-8b: 
+   - Model: https://build.nvidia.com/deepseek-ai/deepseek-r1-distill-llama-8b, 
+   - NIM: https://catalog.ngc.nvidia.com/orgs/nim/teams/deepseek-ai/containers/deepseek-r1-distill-llama-8b
+
+- mistral-nemo-12b-instruct: https://build.nvidia.com/nv-mistralai/mistral-nemo-12b-instruct
 
 Other Models compatible with meta-llama3-8b-instruct
 Multilingual-E5-Large: A general-purpose embedding model also used in RAG workflows 
