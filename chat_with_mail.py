@@ -475,7 +475,7 @@ class EmailChatBot:
                 retriever._get_relevant_documents = reranked_get_relevant_docs
                 self.qa.retriever = retriever
             
-            result = self.qa({"question": message})
+            result = self.qa.invoke({"question": message})
             response = result.get("answer", "I apologize, but I couldn't generate a response.")
             
             # Update chat history
