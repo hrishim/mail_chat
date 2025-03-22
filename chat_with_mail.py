@@ -18,6 +18,16 @@ from langchain.chains.conversational_retrieval.prompts import CONDENSE_QUESTION_
 from langchain.chains.question_answering import load_qa_chain
 from langchain.memory import ConversationBufferMemory
 import numpy as np
+import logging
+
+# Configure logging
+logger = logging.getLogger('rag_debug')
+logger.setLevel(logging.DEBUG)
+file_handler = logging.FileHandler('rag_debug.log')
+file_handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 # Load environment variables
 load_dotenv()
@@ -36,6 +46,14 @@ class EmailChatBot:
         # Get user details from env if not provided
         self.user_name = user_name or os.getenv("USER_FULLNAME", "YOUR_NAME")
         self.user_email = user_email or os.getenv("USER_EMAIL", "YOUR_EMAIL")
+        
+        # Log initial parameters
+        logger.info("Initializing EmailChatBot:")
+        logger.info(f"  Database folder: {vectordb_path}")
+        logger.info(f"  User name: {self.user_name}")
+        logger.info(f"  User email: {self.user_email}")
+        logger.info(f"  Number of documents: {num_docs}")
+        logger.info(f"  Reranking multiplier: {rerank_multiplier}")
         
         # Document retrieval settings
         self.num_docs = num_docs
@@ -236,78 +254,102 @@ class EmailChatBot:
 
     def mistral_rerank(self, query: str, docs: List[Document], k: int) -> List[Document]:
         """Rerank documents using NV-RerankQA-Mistral-4B-v3."""
+        logger.info(f"\nReranking with Mistral reranker:")
+        logger.info(f"  Query: {query}")
+        logger.info(f"  Input documents: {len(docs)}")
+        logger.info(f"  Target documents: {k}")
+        
+        # Prepare documents for reranking
+        passages = [doc.page_content for doc in docs]
+        
+        # Rerank using Mistral
         try:
-            # Check if reranker is ready
-            if self.get_reranker_status() != "ready":
-                print("Reranker is not ready, falling back to cosine similarity")
-                return self.cosine_rerank(query, docs, k)
-
-            # Prepare the request
-            headers = {"Content-Type": "application/json"}
-            data = {
-                "query": query,
-                "passages": [doc.page_content for doc in docs],
-                "model": "nv-rerankqa-mistral-4b-v3"
-            }
-
-            # Make request to local reranker
-            response = requests.post(
-                "http://0.0.0.0:8001/v1/reranking/rerank",
-                headers=headers,
-                json=data,
-                timeout=30
+            scores = self.reranker.predict(
+                query=query,
+                passages=passages
             )
-            response.raise_for_status()
-            results = response.json()
-
-            # Sort by scores and return top k
-            scored_docs = list(zip(results["scores"], docs))
-            sorted_docs = sorted(scored_docs, key=lambda x: float(x[0]), reverse=True)
-            return [doc for _, doc in sorted_docs[:k]]
-
+            
+            # Sort by score
+            reranked_docs = [doc for _, doc in sorted(
+                zip(scores, docs),
+                key=lambda x: x[0],
+                reverse=True
+            )][:k]
+            
+            # Log reranking results
+            logger.info("\nReranking results:")
+            for i, (doc, score) in enumerate(zip(reranked_docs, sorted(scores, reverse=True)[:k])):
+                logger.info(f"\nDocument {i+1}:")
+                logger.info(f"  Score: {score:.4f}")
+                logger.info(f"  Word count: {len(doc.page_content.split())}")
+                logger.info(f"  Content: {doc.page_content}")
+            
+            return reranked_docs
         except Exception as e:
-            print(f"Reranking error: {str(e)}, falling back to cosine similarity")
+            logger.error(f"Error in Mistral reranking: {str(e)}")
+            logger.error(f"Falling back to cosine similarity reranking")
             return self.cosine_rerank(query, docs, k)
 
     def cosine_rerank(self, query: str, docs: List[Document], k: int) -> List[Document]:
         """Rerank documents using cosine similarity."""
-        # Compute query embedding once
+        logger.info(f"\nReranking with cosine similarity:")
+        logger.info(f"  Query: {query}")
+        logger.info(f"  Input documents: {len(docs)}")
+        logger.info(f"  Target documents: {k}")
+        
+        # Get embeddings
         query_embedding = self.embeddings.embed_query(query)
+        doc_embeddings = [self.embeddings.embed_query(doc.page_content) for doc in docs]
         
-        # Score documents using cosine similarity
-        scores = []
-        for doc in docs:
-            # Embed the document content
-            doc_embedding = self.embeddings.embed_query(doc.page_content)
-            
-            # Compute cosine similarity
-            similarity = np.dot(query_embedding, doc_embedding) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
-            )
-            scores.append((similarity, doc))
+        # Calculate similarities
+        similarities = [
+            np.dot(query_embedding, doc_embedding) / 
+            (np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding))
+            for doc_embedding in doc_embeddings
+        ]
         
-        # Sort by similarity score and take top k
-        sorted_docs = sorted(scores, key=lambda x: x[0], reverse=True)
-        return [doc for _, doc in sorted_docs[:k]]
+        # Sort by similarity
+        reranked_docs = [doc for _, doc in sorted(
+            zip(similarities, docs),
+            key=lambda x: x[0],
+            reverse=True
+        )][:k]
+        
+        # Log reranking results
+        logger.info("\nReranking results:")
+        for i, (doc, sim) in enumerate(zip(reranked_docs, sorted(similarities, reverse=True)[:k])):
+            logger.info(f"\nDocument {i+1}:")
+            logger.info(f"  Similarity score: {sim:.4f}")
+            logger.info(f"  Word count: {len(doc.page_content.split())}")
+            logger.info(f"  Content: {doc.page_content}")
+        
+        return reranked_docs
 
     def get_relevant_context(self, query: str, rerank_method: str = "Cosine Similarity") -> str:
         """Retrieve relevant email context for the query."""
+        logger.info(f"\nRetrieving context for query: {query}")
+        logger.info(f"  Use reranking: {rerank_method != 'No Reranking'}")
+        
         if rerank_method == "No Reranking":
             # Original method without reranking
             docs = self.vectorstore.similarity_search(query, k=self.num_docs)
+            logger.info(f"  Retrieved {len(docs)} documents without reranking")
         else:
             # Get more candidates for reranking
-            docs = self.vectorstore.similarity_search(query, k=self.num_docs*self.rerank_multiplier)
+            docs = self.vectorstore.similarity_search(query, k=self.num_docs * self.rerank_multiplier)
+            logger.info(f"  Retrieved {len(docs)} documents for reranking")
             
             # Apply selected reranking method
             if rerank_method == "Mistral Reranker":
                 docs = self.mistral_rerank(query, docs, self.num_docs)
             else:  # Cosine Similarity
                 docs = self.cosine_rerank(query, docs, self.num_docs)
+            logger.info(f"  Reranked to {len(docs)} documents")
         
-        # Store the retrieved documents
-        self.last_retrieved_docs = docs
-        return "\n\n".join(doc.page_content for doc in docs)
+        # Combine document contents
+        context = "\n\n".join(doc.page_content for doc in docs)
+        logger.info(f"  Final context word count: {len(context.split())}")
+        return context
 
     def setup_components(self):
         """Initialize the RAG components."""
@@ -379,6 +421,14 @@ class EmailChatBot:
 
     def update_parameters(self, vectordb_path: str, user_name: str, user_email: str, num_docs: int, rerank_multiplier: int) -> None:
         """Update bot parameters and reinitialize components if needed."""
+        # Log parameter changes
+        logger.info("Updating parameters:")
+        logger.info(f"  Database folder: {vectordb_path}")
+        logger.info(f"  User name: {user_name}")
+        logger.info(f"  User email: {user_email}")
+        logger.info(f"  Number of documents: {num_docs}")
+        logger.info(f"  Reranking multiplier: {rerank_multiplier}")
+        
         self.vectordb_path = Path(vectordb_path)
         self.user_name = user_name
         self.user_email = user_email
@@ -430,43 +480,16 @@ class EmailChatBot:
                 messages.append(AIMessage(content=msg["content"]))
         return messages
 
-    def chat_simple(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
-        """Process a chat message using the simple RAG approach."""
-        try:
-            # Get relevant context
-            print("Getting relevant context...")
-            context = self.get_relevant_context(message, rerank_method=rerank_method)
-            print(f"Found {len(context.split())} words of context")
-            
-            # Format the prompt with context and chat history
-            print("Formatting prompt...")
-            formatted_prompt = self.prompt.format(
-                context=context,
-                chat_history=self.format_chat_history(),
-                question=message
-            )
-            print("Prompt formatted successfully")
-
-            # Get response from LLM
-            print("Querying LLM...")
-            response = self.query_llm(formatted_prompt)
-            print("Got response from LLM")
-            
-            # Update chat history
-            self.chat_history.append({"role": "user", "content": message})
-            self.chat_history.append({"role": "assistant", "content": response})
-            
-            return response
-        except Exception as e:
-            print(f"Error in chat: {str(e)}")
-            print(f"Error type: {type(e)}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            return "I apologize, but I encountered an error while processing your request."
-
     def chat_chain(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
         """Process a chat message using the ConversationalRetrievalChain."""
         try:
+            logger.info("\nProcessing query with chat_chain:")
+            logger.info(f"  Query: {message}")
+            logger.info(f"  Retrieval method: Conversational Chain")
+            logger.info(f"  Reranking method: {rerank_method}")
+            logger.info(f"  Number of documents: {self.num_docs}")
+            logger.info(f"  Reranking multiplier: {self.rerank_multiplier}")
+            
             if rerank_method != "No Reranking":
                 # Create a custom retriever that uses reranking
                 retriever = self.vectorstore.as_retriever()
@@ -477,17 +500,46 @@ class EmailChatBot:
                     k = kwargs.get('k', self.num_docs)  
                     docs = original_get_relevant_docs(*args, **{**kwargs, 'k': k * self.rerank_multiplier})
                     
+                    # Log initial retrieval
+                    total_words = sum(len(doc.page_content.split()) for doc in docs)
+                    logger.info(f"\nInitial retrieval:")
+                    logger.info(f"  Number of documents: {len(docs)}")
+                    logger.info(f"  Total words: {total_words}")
+                    for i, doc in enumerate(docs):
+                        logger.info(f"\nDocument {i+1}:")
+                        logger.info(f"  Word count: {len(doc.page_content.split())}")
+                        logger.info(f"  Content: {doc.page_content}")
+                    
                     # Apply selected reranking method
                     if rerank_method == "Mistral Reranker":
-                        return self.mistral_rerank(message, docs, k)
+                        reranked_docs = self.mistral_rerank(message, docs, k)
                     else:  # Cosine Similarity
-                        return self.cosine_rerank(message, docs, k)
+                        reranked_docs = self.cosine_rerank(message, docs, k)
+                    
+                    # Log reranked results
+                    total_words = sum(len(doc.page_content.split()) for doc in reranked_docs)
+                    logger.info(f"\nAfter reranking:")
+                    logger.info(f"  Number of documents: {len(reranked_docs)}")
+                    logger.info(f"  Total words: {total_words}")
+                    for i, doc in enumerate(reranked_docs):
+                        logger.info(f"\nDocument {i+1}:")
+                        logger.info(f"  Word count: {len(doc.page_content.split())}")
+                        logger.info(f"  Content: {doc.page_content}")
+                    
+                    return reranked_docs
                 
                 retriever._get_relevant_documents = reranked_get_relevant_docs
                 self.qa.retriever = retriever
+            else:
+                # Log that we're using standard retrieval
+                logger.info("\nUsing standard retrieval without reranking")
             
             result = self.qa.invoke({"question": message})
             response = result.get("answer", "I apologize, but I couldn't generate a response.")
+            
+            # Log the response
+            logger.info(f"\nGenerated response:")
+            logger.info(f"  {response}")
             
             # Update chat history
             self.chat_history.append({"role": "user", "content": message})
@@ -495,10 +547,54 @@ class EmailChatBot:
             
             return response
         except Exception as e:
-            print(f"Error in chat_chain: {str(e)}")
-            print(f"Error type: {type(e)}")
+            error_msg = f"Error in chat_chain: {str(e)}"
+            logger.error(error_msg)
+            logger.error(f"Error type: {type(e)}")
             import traceback
-            print(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return "I apologize, but I encountered an error while processing your request."
+
+    def chat_simple(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
+        """Process a chat message using simple RAG without conversation history."""
+        try:
+            logger.info("\nProcessing query with chat_simple:")
+            logger.info(f"  Query: {message}")
+            logger.info(f"  Retrieval method: Simple RAG")
+            logger.info(f"  Reranking method: {rerank_method}")
+            logger.info(f"  Number of documents: {self.num_docs}")
+            logger.info(f"  Reranking multiplier: {self.rerank_multiplier}")
+            
+            # Get relevant context
+            context = self.get_relevant_context(message, rerank_method != "No Reranking")
+            
+            # Log the context
+            logger.info(f"\nRetrieved context:")
+            logger.info(f"  Word count: {len(context.split())}")
+            logger.info(f"  Content: {context}")
+            
+            # Generate response
+            prompt = self.prompt.format(
+                context=context,
+                chat_history=self.format_chat_history(),
+                question=message
+            )
+            response = self.query_llm(prompt)
+            
+            # Log the response
+            logger.info(f"\nGenerated response:")
+            logger.info(f"  {response}")
+            
+            # Update chat history
+            self.chat_history.append({"role": "user", "content": message})
+            self.chat_history.append({"role": "assistant", "content": response})
+            
+            return response
+        except Exception as e:
+            error_msg = f"Error in chat_simple: {str(e)}"
+            logger.error(error_msg)
+            logger.error(f"Error type: {type(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return "I apologize, but I encountered an error while processing your request."
 
     def clear_history(self) -> None:
