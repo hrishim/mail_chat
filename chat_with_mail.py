@@ -10,6 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
+from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_nvidia_ai_endpoints import ChatNVIDIA, NVIDIAEmbeddings
 from langchain.chains import ConversationalRetrievalChain, LLMChain
@@ -49,6 +50,7 @@ class EmailChatBot:
         self.chat_history: List[Dict[str, str]] = []
         self.llm_url = "http://0.0.0.0:8000/v1/completions"
         self.container_status = "stopped"
+        self.reranker_status = "stopped"
         self.last_retrieved_docs = None  # Store last retrieved documents
         
         # Initialize embeddings
@@ -59,6 +61,10 @@ class EmailChatBot:
     @property
     def container_name(self):
         return "meta-llama3-8b-instruct"
+
+    @property
+    def reranker_container_name(self):
+        return "nv-rerankqa-mistral-4b"
 
     def get_container_status(self) -> str:
         """Get the current status of the LLM container."""
@@ -93,6 +99,35 @@ class EmailChatBot:
                 
         except Exception as e:
             print(f"Error checking container status: {str(e)}")
+            return "unknown"
+
+    def get_reranker_status(self) -> str:
+        """Get the current status of the reranker container."""
+        try:
+            # First check if container is running
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", f"name={self.reranker_container_name}", "--format", "{{.Status}}"],
+                capture_output=True,
+                text=True
+            )
+            if not result.stdout.strip():
+                return "stopped"
+            
+            status = result.stdout.strip().lower()
+            if "up" not in status:
+                return "stopped"
+            
+            # Container is up, now check if model is ready using health endpoint
+            try:
+                response = requests.get("http://0.0.0.0:8001/v1/health/ready", timeout=2)
+                if response.status_code == 200:
+                    return "ready"
+                return "starting"
+            except requests.exceptions.RequestException:
+                return "starting"
+                
+        except Exception as e:
+            print(f"Error checking reranker status: {str(e)}")
             return "unknown"
 
     def start_container(self) -> str:
@@ -146,6 +181,127 @@ class EmailChatBot:
             return "Container stopped"
         except Exception as e:
             return f"Error stopping container: {str(e)}"
+
+    def start_reranker(self) -> str:
+        """Start the reranker container."""
+        try:
+            if self.get_reranker_status() != "stopped":
+                return "Reranker is already running"
+            
+            # Get NGC API key from environment
+            ngc_key = os.getenv("NGC_API_KEY")
+            if not ngc_key:
+                return "NGC_API_KEY environment variable is required"
+            
+            # Create cache directory if it doesn't exist
+            nim_cache = os.path.expanduser("~/.cache/nim")
+            os.makedirs(nim_cache, exist_ok=True)
+            
+            # Start the container
+            subprocess.run([
+                "docker", "run", "-d",
+                "--name", self.reranker_container_name,
+                "--gpus", "all",
+                "--shm-size=16GB",
+                "-e", f"NGC_API_KEY={ngc_key}",
+                "-v", f"{nim_cache}:/opt/nim/.cache",
+                "-u", str(os.getuid()),
+                "-p", "8001:8000",
+                "nvcr.io/nim/nvidia/nv-rerankqa-mistral-4b-v3:1.0.2"
+            ], check=True)
+            
+            return "Starting reranker container..."
+        except subprocess.CalledProcessError as e:
+            return f"Error starting reranker: {str(e)}"
+        except Exception as e:
+            return f"Unexpected error starting reranker: {str(e)}"
+
+    def stop_reranker(self) -> str:
+        """Stop the reranker container."""
+        try:
+            if self.get_reranker_status() == "stopped":
+                return "Reranker is not running"
+            
+            subprocess.run(["docker", "stop", self.reranker_container_name], check=True)
+            subprocess.run(["docker", "rm", self.reranker_container_name], check=True)
+            return "Reranker stopped successfully"
+        except Exception as e:
+            return f"Error stopping reranker: {str(e)}"
+
+    def mistral_rerank(self, query: str, docs: List[Document], k: int) -> List[Document]:
+        """Rerank documents using NV-RerankQA-Mistral-4B-v3."""
+        try:
+            # Check if reranker is ready
+            if self.get_reranker_status() != "ready":
+                print("Reranker is not ready, falling back to cosine similarity")
+                return self.cosine_rerank(query, docs, k)
+
+            # Prepare the request
+            headers = {"Content-Type": "application/json"}
+            data = {
+                "query": query,
+                "passages": [doc.page_content for doc in docs],
+                "model": "nv-rerankqa-mistral-4b-v3"
+            }
+
+            # Make request to local reranker
+            response = requests.post(
+                "http://0.0.0.0:8001/v1/reranking/rerank",
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            response.raise_for_status()
+            results = response.json()
+
+            # Sort by scores and return top k
+            scored_docs = list(zip(results["scores"], docs))
+            sorted_docs = sorted(scored_docs, key=lambda x: float(x[0]), reverse=True)
+            return [doc for _, doc in sorted_docs[:k]]
+
+        except Exception as e:
+            print(f"Reranking error: {str(e)}, falling back to cosine similarity")
+            return self.cosine_rerank(query, docs, k)
+
+    def cosine_rerank(self, query: str, docs: List[Document], k: int) -> List[Document]:
+        """Rerank documents using cosine similarity."""
+        # Compute query embedding once
+        query_embedding = self.embeddings.embed_query(query)
+        
+        # Score documents using cosine similarity
+        scores = []
+        for doc in docs:
+            # Embed the document content
+            doc_embedding = self.embeddings.embed_query(doc.page_content)
+            
+            # Compute cosine similarity
+            similarity = np.dot(query_embedding, doc_embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
+            )
+            scores.append((similarity, doc))
+        
+        # Sort by similarity score and take top k
+        sorted_docs = sorted(scores, key=lambda x: x[0], reverse=True)
+        return [doc for _, doc in sorted_docs[:k]]
+
+    def get_relevant_context(self, query: str, rerank_method: str = "Cosine Similarity") -> str:
+        """Retrieve relevant email context for the query."""
+        if rerank_method == "No Reranking":
+            # Original method without reranking
+            docs = self.vectorstore.similarity_search(query, k=self.num_docs)
+        else:
+            # Get more candidates for reranking
+            docs = self.vectorstore.similarity_search(query, k=self.num_docs*self.rerank_multiplier)
+            
+            # Apply selected reranking method
+            if rerank_method == "Mistral Reranker":
+                docs = self.mistral_rerank(query, docs, self.num_docs)
+            else:  # Cosine Similarity
+                docs = self.cosine_rerank(query, docs, self.num_docs)
+        
+        # Store the retrieved documents
+        self.last_retrieved_docs = docs
+        return "\n\n".join(doc.page_content for doc in docs)
 
     def setup_components(self):
         """Initialize the RAG components."""
@@ -257,44 +413,12 @@ class EmailChatBot:
                 messages.append(AIMessage(content=msg["content"]))
         return messages
 
-    def get_relevant_context(self, query: str, use_rerank: bool = False) -> str:
-        """Retrieve relevant email context for the query."""
-        if not use_rerank:
-            # Original method
-            docs = self.vectorstore.similarity_search(query, k=self.num_docs)
-        else:
-            # Get more candidates for reranking
-            docs = self.vectorstore.similarity_search(query, k=self.num_docs*self.rerank_multiplier)
-            
-            # Compute query embedding once
-            query_embedding = self.embeddings.embed_query(query)
-            
-            # Score documents using cosine similarity
-            scores = []
-            for doc in docs:
-                # Embed the document content
-                doc_embedding = self.embeddings.embed_query(doc.page_content)
-                
-                # Compute cosine similarity
-                similarity = np.dot(query_embedding, doc_embedding) / (
-                    np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
-                )
-                scores.append((similarity, doc))
-            
-            # Sort by similarity score and take top k
-            sorted_docs = sorted(scores, key=lambda x: x[0], reverse=True)
-            docs = [doc for _, doc in sorted_docs[:self.num_docs]]
-        
-        # Store the retrieved documents
-        self.last_retrieved_docs = docs
-        return "\n\n".join(doc.page_content for doc in docs)
-
-    def chat_simple(self, message: str, use_rerank: bool = False) -> str:
+    def chat_simple(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
         """Process a chat message using the simple RAG approach."""
         try:
             # Get relevant context
             print("Getting relevant context...")
-            context = self.get_relevant_context(message, use_rerank=use_rerank)
+            context = self.get_relevant_context(message, rerank_method=rerank_method)
             print(f"Found {len(context.split())} words of context")
             
             # Format the prompt with context and chat history
@@ -323,10 +447,10 @@ class EmailChatBot:
             print(f"Traceback: {traceback.format_exc()}")
             return "I apologize, but I encountered an error while processing your request."
 
-    def chat_chain(self, message: str, use_rerank: bool = False, rerank_multiplier: int = 5) -> str:
+    def chat_chain(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
         """Process a chat message using the ConversationalRetrievalChain."""
         try:
-            if use_rerank:
+            if rerank_method != "No Reranking":
                 # Create a custom retriever that uses reranking
                 retriever = self.vectorstore.as_retriever()
                 original_get_relevant_docs = retriever._get_relevant_documents
@@ -334,27 +458,13 @@ class EmailChatBot:
                 def reranked_get_relevant_docs(*args, **kwargs):
                     # Get more candidates
                     k = kwargs.get('k', 4)
-                    docs = original_get_relevant_docs(*args, **{**kwargs, 'k': k * rerank_multiplier})
+                    docs = original_get_relevant_docs(*args, **{**kwargs, 'k': k * self.rerank_multiplier})
                     
-                    # Compute query embedding once
-                    query_embedding = self.embeddings.embed_query(message)
-                    
-                    # Score documents using cosine similarity
-                    scores = []
-                    for doc in docs:
-                        # Embed the document content
-                        doc_embedding = self.embeddings.embed_query(doc.page_content)
-                        
-                        # Compute cosine similarity
-                        similarity = np.dot(query_embedding, doc_embedding) / (
-                            np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
-                        )
-                        scores.append((similarity, doc))
-                    
-                    # Sort by similarity score (first element of tuple)
-                    sorted_results = sorted(scores, key=lambda x: x[0], reverse=True)
-                    # Return top k reranked docs
-                    return [doc for _, doc in sorted_results[:k]]
+                    # Apply selected reranking method
+                    if rerank_method == "Mistral Reranker":
+                        return self.mistral_rerank(message, docs, k)
+                    else:  # Cosine Similarity
+                        return self.cosine_rerank(message, docs, k)
                 
                 retriever._get_relevant_documents = reranked_get_relevant_docs
                 self.qa.retriever = retriever
@@ -394,13 +504,30 @@ def create_chat_interface():
         user_name=default_user_name,
         user_email=default_user_email
     )
-    initial_status = initial_bot.get_container_status()
     
     with gr.Blocks(title="Email Chat Assistant") as interface:
-        gr.Markdown("# Email Chat Assistant\nChat with your email history using AI")
+        gr.Markdown("# 📧 Email Chat Assistant")
         
         with gr.Row():
             with gr.Column(scale=2):
+                with gr.Row():
+                    container_status = gr.Textbox(
+                        label="Container Status",
+                        value=initial_bot.get_container_status(),
+                        interactive=False
+                    )
+                    reranker_status = gr.Textbox(
+                        label="Reranker Status",
+                        value=initial_bot.get_reranker_status(),
+                        interactive=False
+                    )
+                with gr.Row():
+                    start_btn = gr.Button("Start LLM", variant="primary")
+                    stop_btn = gr.Button("Stop LLM", variant="secondary")
+                    refresh_status = gr.Button("Refresh Status")
+                with gr.Row():
+                    start_reranker_btn = gr.Button("Start Reranker", variant="primary")
+                    stop_reranker_btn = gr.Button("Stop Reranker", variant="secondary")
                 with gr.Group():
                     vectordb_path = gr.Textbox(
                         label="Vector Database Directory",
@@ -441,27 +568,25 @@ def create_chat_interface():
                     with gr.Row():
                         update_params = gr.Button("Update Parameters", variant="primary")
                         reset_params = gr.Button("Reset to Default Values", variant="secondary")
-                
-                container_status = gr.Textbox(
-                    label="LLM Container Status",
-                    value=initial_status,
-                    interactive=False
-                )
             with gr.Column(scale=1):
-                start_btn = gr.Button("Start LLM", variant="primary")
-                stop_btn = gr.Button("Stop LLM", variant="secondary")
-                refresh_status = gr.Button("Refresh Status", variant="secondary")
+                pass
         
         # Initialize bot - use initial bot if container is already running
-        bot = initial_bot if initial_status in ["ready", "starting"] else None
+        bot = initial_bot if initial_bot.get_container_status() in ["ready", "starting"] else None
         
         retrieval_method = gr.Radio(
-            choices=["Simple RAG", "Conversational Chain"],
-            value="Conversational Chain",
-            label="Retrieval Method"
+            ["Simple RAG", "Conversational Chain"],
+            label="Retrieval Method",
+            value="Conversational Chain"
         )
         
-        use_rerank = gr.Checkbox(label="Use Reranking", value=True)
+        rerank_method = gr.Dropdown(
+            choices=["No Reranking", "Cosine Similarity", "Mistral Reranker"],
+            label="Reranking Method",
+            value="Cosine Similarity",
+            type="value",
+            info="Select the method to rerank retrieved documents"
+        )
         
         chatbot = gr.Chatbot(
             height=600,
@@ -538,7 +663,21 @@ def create_chat_interface():
                 return [result, "stopped"]
             return ["Bot not initialized", "stopped"]
         
-        def respond(message, history, method, use_rerank):
+        def start_reranker():
+            nonlocal bot
+            if bot is not None:
+                result = bot.start_reranker()
+                return [result, bot.get_reranker_status()]
+            return ["Bot not initialized", "stopped"]
+        
+        def stop_reranker():
+            nonlocal bot
+            if bot is not None:
+                result = bot.stop_reranker()
+                return [result, "stopped"]
+            return ["Bot not initialized", "stopped"]
+        
+        def respond(message, history, method, rerank_method):
             if bot is None:
                 return "", history + [{"role": "assistant", "content": "Please start the LLM container first"}]
                 
@@ -546,10 +685,14 @@ def create_chat_interface():
             if status != "ready":
                 return "", history + [{"role": "assistant", "content": f"Please wait for the LLM container to be ready before sending messages. Current status: {status}"}]
             
+            # Check if mistral reranking is selected but not ready
+            if rerank_method == "Mistral Reranker" and bot.get_reranker_status() != "ready":
+                return "", history + [{"role": "assistant", "content": "Mistral reranker is not ready. Please start it first or choose a different reranking method."}]
+            
             if method == "Simple RAG":
-                bot_response = bot.chat_simple(message, use_rerank=use_rerank)
+                bot_response = bot.chat_simple(message, rerank_method=rerank_method)
             else:
-                bot_response = bot.chat_chain(message, use_rerank=use_rerank)
+                bot_response = bot.chat_chain(message, rerank_method=rerank_method)
             
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": bot_response})
@@ -582,9 +725,19 @@ def create_chat_interface():
             None,
             [vectordb_path, user_name, user_email, num_docs, rerank_multiplier]
         )
-        submit.click(respond, [msg, chatbot, retrieval_method, use_rerank], [msg, chatbot])
+        start_reranker_btn.click(
+            start_reranker,
+            None,
+            [reranker_status, reranker_status]
+        )
+        stop_reranker_btn.click(
+            stop_reranker,
+            None,
+            [reranker_status, reranker_status]
+        )
+        submit.click(respond, [msg, chatbot, retrieval_method, rerank_method], [msg, chatbot])
         clear.click(clear_chat_history, None, chatbot)
-        msg.submit(respond, [msg, chatbot, retrieval_method, use_rerank], [msg, chatbot])
+        msg.submit(respond, [msg, chatbot, retrieval_method, rerank_method], [msg, chatbot])
     
     # Launch the interface
     interface.launch(server_name="0.0.0.0", share=False)
