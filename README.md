@@ -285,3 +285,15 @@ Try asking questions like:
    - "ImportError: cannot import name 'X' from 'langchain'": Most components have moved to modular packages. Check `requirements.txt` for correct package versions
 
 For more detailed error messages, check the terminal where you started the chat interface.
+
+## Performance
+
+**Query:** What is Gopal Srinivasan's email address?
+**Response:** Gopal Srinivasan's email address is xxxx@yyyy.com
+
+
+Retrieval time: 1.031 seconds (retrieve 50 records)
+
+Reranking time: 23.588 seconds (Rerank and return 5 records)
+
+Response time: 25.354 seconds (LLM response time)
