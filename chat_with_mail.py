@@ -377,6 +377,17 @@ class EmailChatBot:
             ("human", "{{question}}")
         ])
 
+    def update_parameters(self, vectordb_path: str, user_name: str, user_email: str, num_docs: int, rerank_multiplier: int) -> None:
+        """Update bot parameters and reinitialize components if needed."""
+        self.vectordb_path = Path(vectordb_path)
+        self.user_name = user_name
+        self.user_email = user_email
+        self.num_docs = num_docs
+        self.rerank_multiplier = rerank_multiplier
+        
+        # Reinitialize components with new parameters
+        self.setup_components()
+
     def query_llm(self, prompt: str, max_tokens: int = 512) -> str:
         """Query the local LLM."""
         try:
@@ -463,7 +474,7 @@ class EmailChatBot:
                 
                 def reranked_get_relevant_docs(*args, **kwargs):
                     # Get more candidates
-                    k = kwargs.get('k', 4)
+                    k = kwargs.get('k', self.num_docs)  
                     docs = original_get_relevant_docs(*args, **{**kwargs, 'k': k * self.rerank_multiplier})
                     
                     # Apply selected reranking method
@@ -537,38 +548,38 @@ def create_chat_interface():
                 with gr.Group():
                     vectordb_path = gr.Textbox(
                         label="Vector Database Directory",
-                        placeholder="Enter vector database directory path",
                         value=default_vectordb,
+                        info="Path to the FAISS vector database directory"
                     )
-                    gr.Markdown("*Value loaded from .env file*" if os.getenv("VECTOR_DB") else "*Using default path*")
                     
                     user_name = gr.Textbox(
                         label="User Name",
-                        placeholder="Enter your name",
                         value=default_user_name,
+                        info="Your full name for personalized responses"
                     )
-                    gr.Markdown("*Value loaded from .env file*" if os.getenv("USER_FULLNAME") else "*Using default value*")
                     
                     user_email = gr.Textbox(
                         label="User Email",
-                        placeholder="Enter your email",
                         value=default_user_email,
+                        info="Your email for personalized responses"
                     )
-                    gr.Markdown("*Value loaded from .env file*" if os.getenv("USER_EMAIL") else "*Using default value*")
                     
                     num_docs = gr.Slider(
-                        label="Number of Documents to Retrieve",
                         minimum=1,
                         maximum=10,
                         value=4,
-                        step=1
+                        step=1,
+                        label="Number of Documents",
+                        info="Number of relevant documents to retrieve"
                     )
+                    
                     rerank_multiplier = gr.Slider(
-                        label="Reranking Multiplier",
-                        minimum=1,
-                        maximum=10,
+                        minimum=2,
+                        maximum=5,
                         value=3,
-                        step=1
+                        step=1,
+                        label="Reranking Multiplier",
+                        info="Multiplier for number of documents to consider for reranking"
                     )
                     
                     with gr.Row():
@@ -626,25 +637,13 @@ def create_chat_interface():
             return fresh_defaults
 
         def update_parameters(vdb_path, uname, uemail, num_docs, rerank_multiplier):
-            """Update bot with new parameters if it exists"""
             nonlocal bot
             if bot is not None:
-                try:
-                    # Create new bot with updated parameters
-                    new_bot = EmailChatBot(
-                        vectordb_path=vdb_path.strip(),
-                        user_name=uname.strip(),
-                        user_email=uemail.strip(),
-                        num_docs=num_docs,
-                        rerank_multiplier=rerank_multiplier
-                    )
-                    # If creation successful, update the bot
-                    bot = new_bot
-                    return "Parameters updated successfully"
-                except ValueError as e:
-                    return str(e)
-            return "No active bot session. Start LLM to apply parameters."
-
+                # Update parameters on existing bot instead of creating new one
+                bot.update_parameters(vdb_path, uname, uemail, num_docs, rerank_multiplier)
+                return "Parameters updated successfully"
+            return "Bot not initialized"
+        
         def start_llm(vdb_path, uname, uemail, num_docs, rerank_multiplier):
             nonlocal bot
             try:
@@ -710,6 +709,10 @@ def create_chat_interface():
                 bot.clear_history()
             return None
         
+        def update_rerank_ui(rerank_choice):
+            """Update UI elements based on reranking choice."""
+            return gr.update(interactive=rerank_choice != "No Reranking")
+        
         # Set up event handlers
         start_btn.click(
             start_llm,
@@ -731,6 +734,7 @@ def create_chat_interface():
             None,
             [vectordb_path, user_name, user_email, num_docs, rerank_multiplier]
         )
+        
         start_reranker_btn.click(
             start_reranker,
             None,
@@ -741,6 +745,14 @@ def create_chat_interface():
             None,
             [reranker_status, reranker_status]
         )
+        
+        # Connect reranking method to UI updates
+        rerank_method.change(
+            update_rerank_ui,
+            inputs=[rerank_method],
+            outputs=[rerank_multiplier]
+        )
+        
         submit.click(respond, [msg, chatbot, retrieval_method, rerank_method], [msg, chatbot])
         clear.click(clear_chat_history, None, chatbot)
         msg.submit(respond, [msg, chatbot, retrieval_method, rerank_method], [msg, chatbot])
