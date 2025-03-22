@@ -54,7 +54,13 @@ class EmailChatBot:
         self.last_retrieved_docs = None  # Store last retrieved documents
         
         # Initialize embeddings
-        self.embeddings = NVIDIAEmbeddings(model="NV-Embed-QA")
+        ngc_key = os.getenv("NGC_API_KEY")
+        if not ngc_key:
+            raise ValueError("NGC_API_KEY environment variable is required")
+        self.embeddings = NVIDIAEmbeddings(
+            model="NV-Embed-QA",
+            api_key=ngc_key
+        )
         
         self.setup_components()
 
