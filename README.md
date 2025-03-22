@@ -63,6 +63,8 @@ This project uses several key dependencies:
 - **FAISS-CPU**: For efficient vector storage and retrieval
 - **Python-Magic**: For file type detection
 - **Python-Dotenv**: For secure environment variable management
+- **Gradio**: For building the chat interface
+- **Nvidia NIM (meta-llama3-8b-instruct)**: For running the Llama 3 8B model locally
 
 All dependencies are specified in `requirements.txt` with their correct versions.
 
@@ -289,6 +291,7 @@ For more detailed error messages, check the terminal where you started the chat 
 ## Performance
 
 **Query:** What is Gopal Srinivasan's email address?
+
 **Response:** Gopal Srinivasan's email address is xxxx@yyyy.com
 
 
