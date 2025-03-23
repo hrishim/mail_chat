@@ -21,7 +21,7 @@ Reranking Models:
 
 
 LLM: 
-- meta-llama3-8b-instruct: 
+- meta-llama3-8b-instruct:  https://build.nvidia.com/meta/llama3-8b
 - llama-3_1-8b-instruct: https://build.nvidia.com/meta/llama-3_1-8b-instruct
 
 - deepseek-r1-distill-llama-8b: 
