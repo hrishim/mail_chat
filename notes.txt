@@ -30,6 +30,8 @@ LLM:
 
 - mistral-nemo-12b-instruct: https://build.nvidia.com/nv-mistralai/mistral-nemo-12b-instruct
 
+- mixtral-8x7b-instruct: https://build.nvidia.com/mistralai/mixtral-8x7b-instruct/modelcard
+
 Other Models compatible with meta-llama3-8b-instruct
 Multilingual-E5-Large: A general-purpose embedding model also used in RAG workflows 
 Llama-Text-Embed-V2: Specifically designed to align with the LLaMA family of models, making it a natural fit for meta-llama3
