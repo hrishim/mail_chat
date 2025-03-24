@@ -796,7 +796,7 @@ def create_chat_interface():
                     
                     rerank_multiplier = gr.Slider(
                         minimum=2,
-                        maximum=5,
+                        maximum=10,  # Increased from 5 to 10
                         value=3,
                         step=1,
                         label="Reranking Multiplier",
