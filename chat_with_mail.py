@@ -6,6 +6,7 @@ import gradio as gr
 import subprocess
 import requests
 import argparse
+import inspect
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ from langchain.chains.question_answering import load_qa_chain
 from langchain.memory import ConversationBufferMemory
 import numpy as np
 import logging
+import traceback
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Email Chatbot with RAG')
@@ -47,6 +49,10 @@ def log_debug(message: str) -> None:
     """Helper function to log debug messages only if debug logging is enabled."""
     if args.debugLog:
         logger.debug(message)
+
+def log_error(message: str) -> None:
+    """Helper function to log error messages regardless of debug setting."""
+    logger.error(message)
 
 def is_valid_vectordb(path: Path) -> bool:
     """Check if the given path is a valid FAISS vector database directory."""
@@ -309,14 +315,16 @@ class EmailChatBot:
                 query=query,
                 passages=passages
             )
+            
+            # Sort by score (moved outside debug block)
+            reranked_docs = [doc for _, doc in sorted(
+                zip(scores, docs),
+                key=lambda x: x[0],
+                reverse=True
+            )][:k]
+            
             if args.debugLog:
                 rerank_time = time.perf_counter() - start_time
-                # Sort by score
-                reranked_docs = [doc for _, doc in sorted(
-                    zip(scores, docs),
-                    key=lambda x: x[0],
-                    reverse=True
-                )][:k]
                 # Log reranking results
                 log_debug("\nReranking results:")
                 log_debug(f"  Reranking time: {rerank_time:.3f} seconds")
@@ -352,14 +360,16 @@ class EmailChatBot:
             (np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding))
             for doc_embedding in doc_embeddings
         ]
+        
+        # Sort by similarity (moved outside debug block)
+        reranked_docs = [doc for _, doc in sorted(
+            zip(similarities, docs),
+            key=lambda x: x[0],
+            reverse=True
+        )][:k]
+        
         if args.debugLog:
             rerank_time = time.perf_counter() - start_time
-            # Sort by similarity
-            reranked_docs = [doc for _, doc in sorted(
-                zip(similarities, docs),
-                key=lambda x: x[0],
-                reverse=True
-            )][:k]
             # Log reranking results
             log_debug("\nReranking results:")
             log_debug(f"  Reranking time: {rerank_time:.3f} seconds")
@@ -518,19 +528,19 @@ class EmailChatBot:
                 log_debug(f"Response JSON: {json_response}")
             return json_response["choices"][0]["text"].strip()
         except requests.exceptions.Timeout:
-            if args.debugLog:
-                log_debug("LLM request timed out")
+            error_msg = "LLM request timed out"
+            log_error(error_msg)
             return "I apologize, but the request timed out. Please try again."
         except requests.exceptions.ConnectionError:
-            if args.debugLog:
-                log_debug("Connection error to LLM")
+            error_msg = "Connection error to LLM"
+            log_error(error_msg)
             return "I apologize, but I couldn't connect to the language model. Please ensure the LLM container is running."
         except Exception as e:
+            error_msg = f"Error querying LLM: {str(e)}\nError type: {type(e)}\n"
             if args.debugLog:
-                log_debug(f"Error querying LLM: {str(e)}")
-                log_debug(f"Error type: {type(e)}")
-                import traceback
-                log_debug(f"Traceback: {traceback.format_exc()}")
+                error_msg += f"Traceback: {traceback.format_exc()}"
+            log_error(error_msg)
+            print(f"Line {inspect.currentframe().f_lineno}: {error_msg}")
             return "I apologize, but I encountered an error while processing your request."
 
     def format_chat_history(self) -> List[Dict[str, str]]:
@@ -573,7 +583,6 @@ class EmailChatBot:
                         log_debug(f"\nInitial retrieval:")
                         log_debug(f"  Number of documents: {len(docs)}")
                         log_debug(f"  Total words: {total_words}")
-                        log_debug(f"  Retrieval time: {retrieval_time:.3f} seconds")
                         for i, doc in enumerate(docs):
                             log_debug(f"\nDocument {i+1}:")
                             log_debug(f"  Word count: {len(doc.page_content.split())}")
@@ -596,6 +605,7 @@ class EmailChatBot:
                             log_debug(f"  Word count: {len(doc.page_content.split())}")
                             log_debug(f"  Content: {doc.page_content}")
                     
+                    # Return the reranked documents
                     return reranked_docs
                 
                 retriever = self.vectorstore.as_retriever()
@@ -625,12 +635,11 @@ class EmailChatBot:
             
             return response
         except Exception as e:
-            error_msg = f"Error in chat_chain: {str(e)}"
+            error_msg = f"Error in chat_chain: {str(e)}\nError type: {type(e)}\n"
             if args.debugLog:
-                log_debug(error_msg)
-                log_debug(f"Error type: {type(e)}")
-                import traceback
-                log_debug(f"Traceback: {traceback.format_exc()}")
+                error_msg += f"Traceback: {traceback.format_exc()}"
+            log_error(error_msg)
+            print(f"Line {inspect.currentframe().f_lineno}: {error_msg}")
             return "I apologize, but I encountered an error while processing your request."
 
     def chat_simple(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
@@ -680,12 +689,11 @@ class EmailChatBot:
             
             return response
         except Exception as e:
-            error_msg = f"Error in chat_simple: {str(e)}"
+            error_msg = f"Error in chat_simple: {str(e)}\nError type: {type(e)}\n"
             if args.debugLog:
-                log_debug(error_msg)
-                log_debug(f"Error type: {type(e)}")
-                import traceback
-                log_debug(f"Traceback: {traceback.format_exc()}")
+                error_msg += f"Traceback: {traceback.format_exc()}"
+            log_error(error_msg)
+            print(f"Line {inspect.currentframe().f_lineno}: {error_msg}")
             return "I apologize, but I encountered an error while processing your request."
 
     def clear_history(self) -> None:
@@ -757,6 +765,7 @@ def create_chat_interface():
                 with gr.Row():
                     start_reranker_btn = gr.Button("Start Reranker", variant="primary")
                     stop_reranker_btn = gr.Button("Stop Reranker", variant="secondary")
+                    refresh_reranker_status = gr.Button("Refresh Reranker Status")
                 with gr.Group():
                     vectordb_path = gr.Textbox(
                         label="Vector Database Directory",
@@ -838,6 +847,11 @@ def create_chat_interface():
                 return "stopped"
             return bot.get_container_status()
         
+        def update_reranker_status():
+            if bot is None:
+                return "stopped"
+            return bot.get_reranker_status()
+
         def reset_to_defaults():
             """Reset all parameters to their default values from .env"""
             # Re-read from env in case .env was modified
@@ -911,7 +925,7 @@ def create_chat_interface():
             nonlocal bot
             if bot is not None:
                 result = bot.start_reranker()
-                return [result, bot.get_reranker_status()]
+                return [result, update_reranker_status()]
             return ["Bot not initialized", "stopped"]
         
         def stop_reranker():
@@ -962,6 +976,16 @@ def create_chat_interface():
             stop_llm,
             None,
             [container_status, container_status]
+        )
+        refresh_status.click(
+            update_status,
+            None,
+            container_status
+        )
+        refresh_reranker_status.click(
+            update_reranker_status,
+            None,
+            reranker_status
         )
         update_params.click(
             update_parameters,
