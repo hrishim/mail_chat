@@ -4,19 +4,45 @@ import logging
 import time
 import subprocess
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, NamedTuple
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
+class ContainerConfig(NamedTuple):
+    """Configuration for a container to test."""
+    name: str
+    image: str
+    port: int
+    model_name: str
+
 class DockerContainerTester:
-    def __init__(self, log_file: Optional[str] = None):
+    # Default container configurations
+    CONTAINER_CONFIGS = {
+        "llama3": ContainerConfig(
+            name="llama3-8b-instruct",
+            image="nvcr.io/nim/meta/llama3-8b-instruct:1.0.0",
+            port=8000,
+            model_name="meta/llama3-8b-instruct"
+        ),
+        "llama3_1": ContainerConfig(
+            name="llama3_1-8b-instruct",
+            image="nvcr.io/nim/meta/llama-3.1-8b-instruct:latest",
+            port=8001,
+            model_name="meta/llama-3.1-8b-instruct"
+        )
+    }
+    
+    def __init__(self, log_file: Optional[str] = None, container_key: str = "llama3"):
         """Initialize the container tester with optional logging."""
+        if container_key not in self.CONTAINER_CONFIGS:
+            raise ValueError(f"Unknown container key: {container_key}. Valid keys are: {list(self.CONTAINER_CONFIGS.keys())}")
+            
+        self.config = self.CONTAINER_CONFIGS[container_key]
         self.logger = self._setup_logging(log_file) if log_file else None
-        self.base_url = "http://0.0.0.0:8000"
-        self.container_name = "meta-llama3-8b-instruct"
+        self.base_url = f"http://0.0.0.0:{self.config.port}"
     
     def _setup_logging(self, log_file: str) -> logging.Logger:
         """Set up logging to file."""
@@ -64,7 +90,7 @@ class DockerContainerTester:
         try:
             # First check if container is running
             result = subprocess.run(
-                ["docker", "ps", "-a", "--filter", f"name={self.container_name}", "--format", "{{.Status}}"],
+                ["docker", "ps", "-a", "--filter", f"name={self.config.name}", "--format", "{{.Status}}"],
                 capture_output=True,
                 text=True
             )
@@ -127,28 +153,38 @@ class DockerContainerTester:
             os.chmod(nim_cache, 0o777)
 
             # First try to remove any stopped container with the same name
-            subprocess.run(["docker", "rm", "-f", self.container_name], 
+            subprocess.run(["docker", "rm", "-f", self.config.name], 
                          capture_output=True, text=True)
             
             # Ensure we're logged in
             if not self.docker_login():
                 return False
             
-            # Start the container
-            self._log("Starting container...")
-            result = subprocess.run([
+            # Build docker command
+            docker_cmd = [
                 "docker", "run", "-d",
-                "--name", self.container_name,
+                "--name", self.config.name,
                 "--gpus", "all",
                 "-e", f"NGC_API_KEY={os.getenv('NGC_API_KEY')}",
                 "-v", f"{nim_cache}:/opt/nim/.cache",
                 "-u", str(os.getuid()),
-                "-p", "8000:8000",
+                "-p", f"{self.config.port}:{self.config.port}",
                 "--shm-size=2g",
                 "--ulimit", "memlock=-1",
                 "--ipc=host",
-                "nvcr.io/nim/meta/llama3-8b-instruct:1.0.0"
-            ], capture_output=True, text=True)
+                self.config.image
+            ]
+            
+            # Log the command (with API key redacted)
+            log_cmd = docker_cmd.copy()
+            for i, arg in enumerate(log_cmd):
+                if arg.startswith("NGC_API_KEY="):
+                    log_cmd[i] = "NGC_API_KEY=<redacted>"
+            self._log(f"Running docker command: {' '.join(log_cmd)}")
+            
+            # Start the container
+            self._log("Starting container...")
+            result = subprocess.run(docker_cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
                 self._log(f"Failed to start container: {result.stderr}", "error")
@@ -165,14 +201,14 @@ class DockerContainerTester:
         """Stop and remove the container."""
         try:
             self._log("Stopping container...")
-            stop_result = subprocess.run(["docker", "stop", self.container_name], 
+            stop_result = subprocess.run(["docker", "stop", self.config.name], 
                                       capture_output=True, text=True)
             if stop_result.returncode != 0:
                 self._log(f"Failed to stop container: {stop_result.stderr}", "error")
                 return False
                 
             self._log("Removing container...")
-            rm_result = subprocess.run(["docker", "rm", self.container_name],
+            rm_result = subprocess.run(["docker", "rm", self.config.name],
                                     capture_output=True, text=True)
             if rm_result.returncode != 0:
                 self._log(f"Failed to remove container: {rm_result.stderr}", "error")
@@ -213,16 +249,16 @@ class DockerContainerTester:
             self._log(f"Failed to list models: {str(e)}", "error")
             return []
     
-    def test_model_inference(self, model_name: str = "meta/llama3-8b-instruct") -> bool:
+    def test_model_inference(self) -> bool:
         """Test model inference with a simple prompt."""
         test_payload = {
-            "model": model_name,
+            "model": self.config.model_name,
             "messages": [{"role": "user", "content": "Write a limerick about the wonders of GPU computing."}],
             "max_tokens": 64
         }
         
         try:
-            self._log(f"Testing model inference for {model_name}")
+            self._log(f"Testing model inference for {self.config.model_name}")
             response = requests.post(
                 f"{self.base_url}/v1/chat/completions",
                 headers={"Content-Type": "application/json"},
@@ -244,7 +280,7 @@ class DockerContainerTester:
             self._log(f"Model inference test failed with error: {str(e)}", "error")
             return False
     
-    def run_all_tests(self, model_name: str = "meta/llama3-8b-instruct") -> Dict[str, bool]:
+    def run_all_tests(self) -> Dict[str, bool]:
         """Run all container tests and return results."""
         results = {
             "docker_login": False,
@@ -289,7 +325,7 @@ class DockerContainerTester:
             results["models_list"] = len(models) > 0
             
             # Test model inference
-            results["inference"] = self.test_model_inference(model_name)
+            results["inference"] = self.test_model_inference()
             
             self._log("Test results summary:")
             self._log(json.dumps(results, indent=2))
@@ -303,7 +339,25 @@ class DockerContainerTester:
             self._log(json.dumps(results, indent=2))
 
 
+def test_all_containers(log_file: str = "docker_test.log") -> Dict[str, Dict[str, bool]]:
+    """Test all configured containers in sequence."""
+    results = {}
+    
+    for container_key in DockerContainerTester.CONTAINER_CONFIGS:
+        print(f"\nTesting container: {container_key}")
+        tester = DockerContainerTester(
+            log_file=f"{container_key}_{log_file}",
+            container_key=container_key
+        )
+        results[container_key] = tester.run_all_tests()
+        
+    return results
+
+
 if __name__ == "__main__":
-    # Example usage
-    tester = DockerContainerTester(log_file="docker_test.log")
-    test_results = tester.run_all_tests()
+    # Test all containers
+    results = test_all_containers()
+    
+    # Print summary
+    print("\nOverall Test Results:")
+    print(json.dumps(results, indent=2))
