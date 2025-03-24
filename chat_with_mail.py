@@ -54,7 +54,9 @@ def is_valid_vectordb(path: Path) -> bool:
 
 class EmailChatBot:
     def __init__(self, vectordb_path: Optional[str] = None, user_name: Optional[str] = None, user_email: Optional[str] = None,
-                 num_docs: int = 4, rerank_multiplier: int = 3):
+                 num_docs: int = 4, rerank_multiplier: int = 3, 
+                 llm_container: str = "meta-llama3-8b-instruct",
+                 reranker_container: str = "nv-rerankqa-mistral-4b"):
         # Use VECTOR_DB from env if vectordb_path not provided
         if vectordb_path is None:
             vectordb_path = os.getenv("VECTOR_DB", "./mail_vectordb")
@@ -62,6 +64,10 @@ class EmailChatBot:
         # Get user details from env if not provided
         self.user_name = user_name or os.getenv("USER_FULLNAME", "YOUR_NAME")
         self.user_email = user_email or os.getenv("USER_EMAIL", "YOUR_EMAIL")
+        
+        # Container names that can be changed
+        self._llm_container = llm_container
+        self._reranker_container = reranker_container
         
         # Log initial parameters
         if args.debugLog:
@@ -71,6 +77,8 @@ class EmailChatBot:
             log_debug(f"  User email: {self.user_email}")
             log_debug(f"  Number of documents: {num_docs}")
             log_debug(f"  Reranking multiplier: {rerank_multiplier}")
+            log_debug(f"  LLM container: {self._llm_container}")
+            log_debug(f"  Reranker container: {self._reranker_container}")
         
         # Document retrieval settings
         self.num_docs = num_docs
@@ -84,8 +92,9 @@ class EmailChatBot:
         
         self.chat_history: List[Dict[str, str]] = []
         self.llm_url = "http://0.0.0.0:8000/v1/completions"
-        self.container_status = "stopped"
-        self.reranker_status = "stopped"
+        # Initialize container statuses using class method
+        self.container_status = self.get_container_status()
+        self.reranker_status = self.get_reranker_status()
         self.last_retrieved_docs = None  # Store last retrieved documents
         
         # Initialize embeddings
@@ -99,20 +108,21 @@ class EmailChatBot:
         
         self.setup_components()
 
-    @property
-    def container_name(self):
-        return "meta-llama3-8b-instruct"
-
-    @property
-    def reranker_container_name(self):
-        return "nv-rerankqa-mistral-4b"
-
-    def get_container_status(self) -> str:
-        """Get the current status of the LLM container."""
+    @classmethod
+    def check_container_status(cls, container_name: str, health_port: int = 8000) -> str:
+        """Get the current status of a container.
+        
+        Args:
+            container_name: Name of the Docker container to check
+            health_port: Port number for the health endpoint (default: 8000 for LLM, use 8001 for reranker)
+            
+        Returns:
+            str: Status of the container ('stopped', 'starting', or 'ready')
+        """
         try:
             # First check if container is running
             result = subprocess.run(
-                ["docker", "ps", "-a", "--filter", f"name={self.container_name}", "--format", "{{.Status}}"],
+                ["docker", "ps", "-a", "--filter", f"name={container_name}", "--format", "{{.Status}}"],
                 capture_output=True,
                 text=True
             )
@@ -125,7 +135,7 @@ class EmailChatBot:
             
             # Container is up, now check if model is ready using health endpoint
             try:
-                response = requests.get("http://0.0.0.0:8000/v1/health/ready", timeout=2)
+                response = requests.get(f"http://0.0.0.0:{health_port}/v1/health/ready", timeout=2)
                 if args.debugLog:
                     log_debug(f"Health endpoint status code: {response.status_code}")
                 if response.status_code == 200:
@@ -140,41 +150,38 @@ class EmailChatBot:
                 if args.debugLog:
                     log_debug(f"Health endpoint error: {str(e)}")
                 return "starting"
-                
         except Exception as e:
             if args.debugLog:
-                log_debug(f"Error checking container status: {str(e)}")
-            return "unknown"
+                log_debug(f"Container status check error: {str(e)}")
+            return "stopped"
+
+    def get_container_status(self) -> str:
+        """Get the current status of the LLM container."""
+        return self.check_container_status(self._llm_container)
 
     def get_reranker_status(self) -> str:
         """Get the current status of the reranker container."""
-        try:
-            # First check if container is running
-            result = subprocess.run(
-                ["docker", "ps", "-a", "--filter", f"name={self.reranker_container_name}", "--format", "{{.Status}}"],
-                capture_output=True,
-                text=True
-            )
-            if not result.stdout.strip():
-                return "stopped"
-            
-            status = result.stdout.strip().lower()
-            if "up" not in status:
-                return "stopped"
-            
-            # Container is up, now check if model is ready using health endpoint
-            try:
-                response = requests.get("http://0.0.0.0:8001/v1/health/ready", timeout=2)
-                if response.status_code == 200:
-                    return "ready"
-                return "starting"
-            except requests.exceptions.RequestException:
-                return "starting"
-                
-        except Exception as e:
-            if args.debugLog:
-                log_debug(f"Error checking reranker status: {str(e)}")
-            return "unknown"
+        return self.check_container_status(self._reranker_container, health_port=8001)
+
+    @property
+    def container_name(self):
+        return self._llm_container
+
+    @container_name.setter
+    def container_name(self, name: str):
+        self._llm_container = name
+        # Update status when container name changes
+        self.container_status = self.check_container_status(name)
+
+    @property
+    def reranker_container_name(self):
+        return self._reranker_container
+
+    @reranker_container_name.setter
+    def reranker_container_name(self, name: str):
+        self._reranker_container = name
+        # Update status when container name changes
+        self.reranker_status = self.check_container_status(name, health_port=8001)
 
     def start_container(self) -> str:
         """Start the LLM container."""
