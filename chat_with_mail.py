@@ -855,6 +855,19 @@ def create_chat_interface():
                 return "stopped"
             return bot.get_container_status()
 
+        def update_reranker_status():
+            """Get reranker status and return status string and button state separately."""
+            if bot is None:
+                return "stopped", gr.update(interactive=True)
+            status = bot.get_reranker_status()
+            return status, gr.update(interactive=status == "stopped")
+
+        def get_reranker_status_only():
+            """Get reranker status string only."""
+            if bot is None:
+                return "stopped"
+            return bot.get_reranker_status()
+        
         def reset_to_defaults():
             """Reset all parameters to their default values from .env"""
             # Re-read from env in case .env was modified
@@ -913,9 +926,9 @@ def create_chat_interface():
                 })
                 result = bot.start_container()
                 status = bot.get_container_status()
-                return [result, status, "", gr.update(interactive=False), gr.update(interactive=status == "stopped")]
+                return [result, "", gr.update(interactive=False), gr.update(interactive=status == "stopped")]
             except ValueError as e:
-                return [str(e), "stopped", "", gr.update(interactive=False), gr.update(interactive=True)]
+                return [str(e), "", gr.update(interactive=False), gr.update(interactive=True)]
         
         def stop_llm():
             nonlocal bot
@@ -929,15 +942,16 @@ def create_chat_interface():
             nonlocal bot
             if bot is not None:
                 result = bot.start_reranker()
-                return [result, get_status_only()]
-            return ["Bot not initialized", "stopped"]
+                status = bot.get_reranker_status()
+                return [result, status, gr.update(interactive=status == "stopped")]
+            return ["Bot not initialized", "stopped", gr.update(interactive=True)]
         
         def stop_reranker():
             nonlocal bot
             if bot is not None:
                 result = bot.stop_reranker()
-                return [result, "stopped"]
-            return ["Bot not initialized", "stopped"]
+                return [result, "stopped", gr.update(interactive=True)]
+            return ["Bot not initialized", "stopped", gr.update(interactive=True)]
         
         def respond(message, history, method, rerank_method):
             if bot is None:
@@ -974,20 +988,20 @@ def create_chat_interface():
         start_btn.click(
             start_llm,
             [vectordb_path, user_name, user_email, num_docs, rerank_multiplier],
-            [container_status, container_status, change_indicator, update_params, start_btn]  # Added start_btn
+            [container_status, change_indicator, update_params, start_btn]  
         )
         stop_btn.click(
             stop_llm,
             None,
-            [container_status, container_status, start_btn]  # Added start_btn
+            [container_status, start_btn]  # Added start_btn
         )
         refresh_status.click(
-            get_status_only,  # Changed to use get_status_only
+            get_status_only,  
             None,
             container_status
         )
         refresh_reranker_status.click(
-            get_status_only,
+            get_reranker_status_only,
             None,
             reranker_status
         )
@@ -1005,12 +1019,12 @@ def create_chat_interface():
         start_reranker_btn.click(
             start_reranker,
             None,
-            [reranker_status, reranker_status]
+            [reranker_status, start_reranker_btn]
         )
         stop_reranker_btn.click(
             stop_reranker,
             None,
-            [reranker_status, reranker_status]
+            [reranker_status, start_reranker_btn]
         )
         
         # Connect reranking method to UI updates
