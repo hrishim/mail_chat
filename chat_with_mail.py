@@ -935,8 +935,8 @@ def create_chat_interface():
             if bot is not None:
                 result = bot.stop_container()
                 bot = None
-                return [result, "stopped", gr.update(interactive=True)]  # Added button state
-            return ["Bot not initialized", "stopped", gr.update(interactive=True)]  # Added button state
+                return ["stopped", result, gr.update(interactive=True)]  # Match order: container_status, change_indicator, start_btn
+            return ["stopped", "Bot not initialized", gr.update(interactive=True)]  # Match order
         
         def start_reranker():
             nonlocal bot
@@ -993,7 +993,7 @@ def create_chat_interface():
         stop_btn.click(
             stop_llm,
             None,
-            [container_status, start_btn]  # Added start_btn
+            [container_status, change_indicator, start_btn]  
         )
         refresh_status.click(
             get_status_only,  
