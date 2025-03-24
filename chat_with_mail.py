@@ -760,7 +760,7 @@ def create_chat_interface():
                     )
                 with gr.Row():
                     start_btn = gr.Button("Start LLM", variant="primary", interactive=initial_bot.get_container_status() == "stopped")
-                    stop_btn = gr.Button("Stop LLM", variant="secondary")
+                    stop_btn = gr.Button("Stop LLM", variant="secondary", interactive=initial_bot.get_container_status() != "stopped")
                     refresh_status = gr.Button("Refresh Status")
                 with gr.Row():
                     start_reranker_btn = gr.Button("Start Reranker", variant="primary")
@@ -926,17 +926,17 @@ def create_chat_interface():
                 })
                 result = bot.start_container()
                 status = bot.get_container_status()
-                return [result, "", gr.update(interactive=False), gr.update(interactive=status == "stopped")]
+                return [result, "", gr.update(interactive=False), gr.update(interactive=status == "stopped"), gr.update(interactive=status != "stopped")]
             except ValueError as e:
-                return [str(e), "", gr.update(interactive=False), gr.update(interactive=True)]
+                return [str(e), "", gr.update(interactive=False), gr.update(interactive=True), gr.update(interactive=False)]
         
         def stop_llm():
             nonlocal bot
             if bot is not None:
                 result = bot.stop_container()
                 bot = None
-                return ["stopped", result, gr.update(interactive=True)]  # Match order: container_status, change_indicator, start_btn
-            return ["stopped", "Bot not initialized", gr.update(interactive=True)]  # Match order
+                return ["stopped", result, gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False)]  # Match order: container_status, change_indicator, start_btn, stop_btn
+            return ["stopped", "Bot not initialized", gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False)]  # Match order
         
         def start_reranker():
             nonlocal bot
@@ -988,12 +988,12 @@ def create_chat_interface():
         start_btn.click(
             start_llm,
             [vectordb_path, user_name, user_email, num_docs, rerank_multiplier],
-            [container_status, change_indicator, update_params, start_btn]  
+            [container_status, change_indicator, update_params, start_btn, stop_btn]
         )
         stop_btn.click(
             stop_llm,
             None,
-            [container_status, change_indicator, start_btn]  
+            [container_status, change_indicator, update_params, start_btn, stop_btn]
         )
         refresh_status.click(
             get_status_only,  
