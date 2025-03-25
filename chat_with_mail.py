@@ -1,58 +1,17 @@
 import os
-import sys
 import json
-import time
-import gradio as gr
-import subprocess
-import requests
-import argparse
-import inspect
-from typing import List, Dict, Any, Optional
 from pathlib import Path
+from typing import Optional, List, Dict, Any, Tuple
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
-from langchain_core.documents import Document
-from langchain_community.vectorstores import FAISS
-from langchain_nvidia_ai_endpoints import ChatNVIDIA, NVIDIAEmbeddings
-from langchain.chains import ConversationalRetrievalChain, LLMChain
-from langchain.chains.conversational_retrieval.prompts import CONDENSE_QUESTION_PROMPT, QA_PROMPT
-from langchain.chains.question_answering import load_qa_chain
-from langchain.memory import ConversationBufferMemory
-import numpy as np
+import subprocess
 import logging
 import traceback
-
-# Parse command line arguments
-parser = argparse.ArgumentParser(description='Email Chatbot with RAG')
-parser.add_argument('--debugLog', type=str, help='Path to the debug log file. If not specified, debug logging will be disabled.')
-args = parser.parse_args()
-
-# Configure logging only if debug log file is specified
-logger = logging.getLogger('rag_debug')
-if args.debugLog:
-    logger.setLevel(logging.DEBUG)
-    file_handler = logging.FileHandler(args.debugLog)
-    file_handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-else:
-    # Disable logging if no debug file specified
-    logger.setLevel(logging.ERROR)
-    logger.addHandler(logging.NullHandler())
+import threading
+from container_manager import ContainerManager
+from utils import log_debug, log_error, args
 
 # Load environment variables
 load_dotenv()
-
-def log_debug(message: str) -> None:
-    """Helper function to log debug messages only if debug logging is enabled."""
-    if args.debugLog:
-        logger.debug(message)
-
-def log_error(message: str) -> None:
-    """Helper function to log error messages regardless of debug setting."""
-    logger.error(message)
 
 def is_valid_vectordb(path: Path) -> bool:
     """Check if the given path is a valid FAISS vector database directory."""
@@ -163,11 +122,11 @@ class EmailChatBot:
 
     def get_container_status(self) -> str:
         """Get the current status of the LLM container."""
-        return self.check_container_status(self._llm_container)
+        return ContainerManager.check_container_status(self._llm_container)
 
     def get_reranker_status(self) -> str:
         """Get the current status of the reranker container."""
-        return self.check_container_status(self._reranker_container, health_port=8001)
+        return ContainerManager.check_container_status(self._reranker_container, health_port=8001)
 
     @property
     def container_name(self):
@@ -177,7 +136,7 @@ class EmailChatBot:
     def container_name(self, name: str):
         self._llm_container = name
         # Update status when container name changes
-        self.container_status = self.check_container_status(name)
+        self.container_status = self.get_container_status()
 
     @property
     def reranker_container_name(self):
@@ -187,63 +146,21 @@ class EmailChatBot:
     def reranker_container_name(self, name: str):
         self._reranker_container = name
         # Update status when container name changes
-        self.reranker_status = self.check_container_status(name, health_port=8001)
+        self.reranker_status = self.get_reranker_status()
 
     def start_container(self) -> str:
         """Start the LLM container."""
-        try:
-            if self.get_container_status() != "stopped":
-                return "Container is already running"
-
-            # Create NIM cache directory if it doesn't exist
-            nim_cache = os.path.expanduser("~/.cache/nim")
-            os.makedirs(nim_cache, exist_ok=True)
-            os.chmod(nim_cache, 0o777)
-
-            # First try to remove any stopped container with the same name
-            subprocess.run(["docker", "rm", "-f", self.container_name], 
-                         capture_output=True, text=True)
-            
-            # Login to NGC
-            ngc_key = os.getenv('NGC_API_KEY')
-            if not ngc_key:
-                return "NGC_API_KEY environment variable not set"
-            
-            subprocess.run(["docker", "login", "nvcr.io", 
-                          "--username", "$oauthtoken", 
-                          "--password", ngc_key], check=True)
-            
-            # Start the container
-            subprocess.run([
-                "docker", "run", "-d",
-                "--name", self.container_name,
-                "--gpus", "all",
-                "-e", f"NGC_API_KEY={ngc_key}",
-                "-v", f"{nim_cache}:/opt/nim/.cache",
-                "-u", str(os.getuid()),
-                "-p", "8000:8000",
-                "--shm-size=2g",
-                "--ulimit", "memlock=-1",
-                "--ipc=host",
-                "nvcr.io/nim/meta/llama3-8b-instruct:1.0.0"
-            ], check=True)
-            
-            return "Container starting..."
-        except Exception as e:
-            if args.debugLog:
-                log_debug(f"Error starting container: {str(e)}")
-            return f"Error starting container: {str(e)}"
+        ngc_key = os.getenv('NGC_API_KEY')
+        return ContainerManager.start_container(
+            container_name=self.container_name,
+            image="nvcr.io/nim/meta/llama3-8b-instruct:1.0.0",
+            port=8000,
+            ngc_key=ngc_key
+        )
 
     def stop_container(self) -> str:
         """Stop the LLM container."""
-        try:
-            subprocess.run(["docker", "stop", self.container_name], check=True)
-            subprocess.run(["docker", "rm", self.container_name], check=True)
-            return "Container stopped"
-        except Exception as e:
-            if args.debugLog:
-                log_debug(f"Error stopping container: {str(e)}")
-            return f"Error stopping container: {str(e)}"
+        return ContainerManager.stop_container(self.container_name)
 
     def start_reranker(self) -> str:
         """Start the reranker container."""
