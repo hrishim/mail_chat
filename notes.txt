@@ -92,3 +92,77 @@ Evaluating RAG flows: https://medium.com/@zilliz_learn/optimizing-rag-applicatio
 python data_prep.py --vectordb-dir hrishim_vectordb --save-frequency 10 hrishi_gmail.mbox
 
 python data_prep.py --vectordb-dir hrishim_vectordb --save-frequency 10 --resume hrishi_gmail.mbox
+
+-----------------------
+
+# Import necessary modules
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.embeddings.sentence_transformer import SentenceTransformerEmbeddings
+from langchain.vectorstores import Chroma
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains import create_retrieval_chain, create_history_aware_retriever
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_openai import ChatOpenAI
+
+# Step 1: Define the contextualization prompt (for reformulating questions)
+contextualize_q_system_prompt = """Given a chat history and the latest user question 
+which might reference context in the chat history, formulate a standalone question 
+which can be understood without the chat history. Do NOT answer the question, 
+just reformulate it if needed and otherwise return it as is."""
+
+contextualize_q_prompt = ChatPromptTemplate.from_messages([
+    ("system", contextualize_q_system_prompt),
+    MessagesPlaceholder("chat_history"),  # This allows access to chat history
+    ("human", "{input}")  # Latest user input
+])
+
+# Step 2: Define the QA prompt template (for generating responses)
+qa_system_prompt = """You are an assistant for question-answering tasks. 
+Use the following pieces of retrieved context to answer the question. 
+If you don't know the answer, just say that you don't know. 
+Use three sentences maximum and keep the answer concise.\n{context}"""
+
+qa_prompt = ChatPromptTemplate.from_messages([
+    ("system", qa_system_prompt),
+    MessagesPlaceholder("chat_history"),  # This allows access to chat history in responses
+    ("human", "{input}")  # Latest user input
+])
+
+# Step 3: Load documents and prepare embeddings
+documents = [
+    {"page_content": "LangChain is a framework for building applications with LLMs.", "metadata": {}},
+    {"page_content": "ConversationalRetrievalChain helps maintain context in chat-based applications.", "metadata": {}}
+]
+
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+texts = text_splitter.split_documents(documents)
+
+embeddings = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+vectorDB = Chroma.from_documents(texts, embeddings)
+
+# Step 4: Set up the language model and retriever
+llm = ChatOpenAI(api_key="YOUR_OPENAI_API_KEY")
+retriever = vectorDB.as_retriever()
+
+# Step 5: Create history-aware retriever using the contextualization prompt
+history_aware_retriever = create_history_aware_retriever(
+    llm=llm,
+    retriever=retriever,
+    prompt=contextualize_q_prompt  # Use updated contextualization prompt here
+)
+
+# Step 6: Create the question-answering chain using the QA prompt template
+question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+
+# Step 7: Combine everything into a ConversationalRetrievalChain
+retrieval_chain = create_retrieval_chain(
+    retriever=history_aware_retriever,
+    combine_docs_chain=question_answer_chain
+)
+
+# Step 8: Invoke the chain with user input and chat history
+user_input = "Can you elaborate on LangChain?"
+chat_history = []  # Initialize empty chat history
+
+response = retrieval_chain.invoke({"input": user_input, "chat_history": chat_history})
+print(response["answer"])
