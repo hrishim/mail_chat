@@ -1,5 +1,6 @@
 import os
 import json
+import gradio as gr
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from dotenv import load_dotenv
@@ -9,6 +10,19 @@ import traceback
 import threading
 from container_manager import ContainerManager
 from utils import log_debug, log_error, args
+from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
+from langchain_community.vectorstores import FAISS
+from langchain_nvidia_ai_endpoints import ChatNVIDIA, NVIDIAEmbeddings
+from langchain.chains import ConversationalRetrievalChain, LLMChain
+from langchain.chains.conversational_retrieval.prompts import CONDENSE_QUESTION_PROMPT, QA_PROMPT
+from langchain.chains.question_answering import load_qa_chain
+from langchain.memory import ConversationBufferMemory
+import numpy as np
+import requests
+import time
+import inspect
 
 # Load environment variables
 load_dotenv()
@@ -72,53 +86,6 @@ class EmailChatBot:
         )
         
         self.setup_components()
-
-    @classmethod
-    def check_container_status(cls, container_name: str, health_port: int = 8000) -> str:
-        """Get the current status of a container.
-        
-        Args:
-            container_name: Name of the Docker container to check
-            health_port: Port number for the health endpoint (default: 8000 for LLM, use 8001 for reranker)
-            
-        Returns:
-            str: Status of the container ('stopped', 'starting', or 'ready')
-        """
-        try:
-            # First check if container is running
-            result = subprocess.run(
-                ["docker", "ps", "-a", "--filter", f"name={container_name}", "--format", "{{.Status}}"],
-                capture_output=True,
-                text=True
-            )
-            if not result.stdout.strip():
-                return "stopped"
-            
-            status = result.stdout.strip().lower()
-            if "up" not in status:
-                return "stopped"
-            
-            # Container is up, now check if model is ready using health endpoint
-            try:
-                response = requests.get(f"http://0.0.0.0:{health_port}/v1/health/ready", timeout=2)
-                if args.debugLog:
-                    log_debug(f"Health endpoint status code: {response.status_code}")
-                if response.status_code == 200:
-                    data = response.json()
-                    if args.debugLog:
-                        log_debug(f"Health endpoint response: {data}")
-                    if data.get("message") == "Service is ready.":
-                        return "ready"
-                return "starting"
-            except (requests.exceptions.RequestException, ValueError) as e:
-                # If health check fails or invalid JSON, model is still starting
-                if args.debugLog:
-                    log_debug(f"Health endpoint error: {str(e)}")
-                return "starting"
-        except Exception as e:
-            if args.debugLog:
-                log_debug(f"Container status check error: {str(e)}")
-            return "stopped"
 
     def get_container_status(self) -> str:
         """Get the current status of the LLM container."""
