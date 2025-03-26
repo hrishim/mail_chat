@@ -354,7 +354,7 @@ class EmailChatBot:
             combine_docs_chain_kwargs={'prompt': custom_qa_prompt},
         )
 
-        # Create the simple RAG prompt
+        # Create the custom RAG prompt
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", f"""{self._base_system_prompt}
             
@@ -375,7 +375,8 @@ class EmailChatBot:
             
             Use the following pieces of context to answer the question at the end.
             If you don't know the answer, just say that you don't know, don't try to make up an answer.
-            Keep answers short and direct.
+            Keep answers short and direct. Do not include system messages, UI prompts, or follow-up questions.
+            Answer ONLY the question asked - no additional context or explanations.
             
             Context from emails: {{context}}
 
@@ -407,6 +408,9 @@ class EmailChatBot:
         """Query the local LLM."""
         try:
             if args.debugLog:
+                log_debug("\nPROMPT STARTS")
+                log_debug(prompt)
+                log_debug("PROMPT ENDS\n")
                 log_debug(f"Sending request to {self.llm_url}")
             response = requests.post(
                 self.llm_url,
@@ -580,6 +584,13 @@ class EmailChatBot:
             if args.debugLog:
                 response_start = time.perf_counter()
             
+            intermediate_response = self.query_llm(prompt)
+            #Create a prompt with the intermediate response
+            prompt = self.prompt2.format(
+                context=intermediate_response,
+                question=message,
+                chat_history=self.format_chat_history()
+            )
             response = self.query_llm(prompt)
             
             if args.debugLog:
