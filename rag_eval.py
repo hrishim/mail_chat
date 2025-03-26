@@ -77,7 +77,7 @@ def evaluate_rag(bot: EmailChatBot, rag_flow: str):
         
         bot.clear_history()  # Clear history before each query
         if rag_flow == "Simple RAG":
-            bot.chat_simple(test_case['query'], use_rerank=True)
+            bot.chat_custom(test_case['query'], use_rerank=True)
         else:
             bot.chat_chain(test_case['query'], use_rerank=True)
         
