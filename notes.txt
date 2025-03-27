@@ -98,6 +98,8 @@ python data_prep.py --vectordb-dir hrishim_vectordb --save-frequency 10 --resume
 Links
 https://python.langchain.com/docs/tutorials/rag/ 
 
+https://blog.epsilla.com/advanced-rag-optimization-boosting-answer-quality-on-complex-questions-through-query-decomposition-e9d836eaf0d5
+
 -----------------------
 
 # Import necessary modules
