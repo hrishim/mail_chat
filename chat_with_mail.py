@@ -325,11 +325,14 @@ class EmailChatBot:
             return_messages=True
         )
 
+        # Base system prompt that's common to both prompts
+        self._base_system_prompt = f"""You are a helpful AI assistant that answers questions about the user's email history.
+            The user's name is {self.user_name} and their email address is {self.user_email}.
+            When they ask questions using "I" or "me", it refers to {self.user_name} ({self.user_email})."""
+
         # Create a custom QA prompt with user identity
         custom_qa_prompt = PromptTemplate(
-            template=f"""You are a helpful AI assistant that answers questions about the user's email history.
-            The user's name is {self.user_name} and their email address is {self.user_email}.
-            When they ask questions using "I" or "me", it refers to {self.user_name} ({self.user_email}).
+            template=f"""{self._base_system_prompt}
             
             Use the following pieces of context to answer the question at the end.
             If you don't know the answer, just say that you don't know, don't try to make up an answer.
@@ -351,11 +354,9 @@ class EmailChatBot:
             combine_docs_chain_kwargs={'prompt': custom_qa_prompt},
         )
 
-        # Create the simple RAG prompt
+        # Create the custom RAG prompt
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are a helpful AI assistant that answers questions about the user's email history. 
-            The user's name is {self.user_name} and their email address is {self.user_email}.
-            When they ask questions using "I" or "me", it refers to {self.user_name} ({self.user_email}).
+            ("system", f"""{self._base_system_prompt}
             
             Use the following email content to answer the user's question.
             
@@ -368,6 +369,20 @@ class EmailChatBot:
             Context from emails: {{context}}"""),
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{{question}}")
+        ])
+        self.prompt2 = ChatPromptTemplate.from_messages([
+            ("system", f"""{self._base_system_prompt}
+            
+            Use the following pieces of context to answer the question at the end.
+            If you don't know the answer, just say that you don't know, don't try to make up an answer.
+            Keep answers short and direct. Do not include system messages, UI prompts, or follow-up questions.
+            Answer ONLY the question asked - no additional context or explanations.
+            
+            Context from emails: {{context}}
+
+            Question: {{question}}
+            Answer:"""),
+            MessagesPlaceholder(variable_name="chat_history")
         ])
 
     def update_parameters(self, vectordb_path: str, user_name: str, user_email: str, num_docs: int, rerank_multiplier: int) -> None:
@@ -393,6 +408,9 @@ class EmailChatBot:
         """Query the local LLM."""
         try:
             if args.debugLog:
+                log_debug("\nPROMPT STARTS")
+                log_debug(prompt)
+                log_debug("PROMPT ENDS\n")
                 log_debug(f"Sending request to {self.llm_url}")
             response = requests.post(
                 self.llm_url,
@@ -436,6 +454,15 @@ class EmailChatBot:
             else:
                 messages.append(AIMessage(content=msg["content"]))
         return messages
+
+    def _update_chat_history(self, message: str, response: str):
+        """Update both chat history and memory with new messages."""
+        # Update chat history
+        self.chat_history.append({"role": "user", "content": message})
+        self.chat_history.append({"role": "assistant", "content": response})
+        # Update memory with just the new messages
+        self.memory.chat_memory.add_user_message(message)
+        self.memory.chat_memory.add_ai_message(response)
 
     def chat_chain(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
         """Process a chat message using the ConversationalRetrievalChain."""
@@ -513,9 +540,8 @@ class EmailChatBot:
                 log_debug(f"  Response time: {response_time:.3f} seconds")
                 log_debug(f"  {response}")
             
-            # Update chat history
-            self.chat_history.append({"role": "user", "content": message})
-            self.chat_history.append({"role": "assistant", "content": response})
+            # Update chat history and memory
+            self._update_chat_history(message, response)
             
             return response
         except Exception as e:
@@ -526,11 +552,11 @@ class EmailChatBot:
             print(f"Line {inspect.currentframe().f_lineno}: {error_msg}")
             return "I apologize, but I encountered an error while processing your request."
 
-    def chat_simple(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
-        """Process a chat message using simple RAG."""
+    def chat_custom(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
+        """Process a chat message using custom RAG."""
         try:
             if args.debugLog:
-                log_debug("\nProcessing query with chat_simple:")
+                log_debug("\nProcessing query with chat_custom:")
                 log_debug(f"  Query: {message}")
                 log_debug(f"  Retrieval method: Simple RAG")
                 log_debug(f"  Reranking method: {rerank_method}")
@@ -549,16 +575,22 @@ class EmailChatBot:
                 log_debug(f"  Content: {context}")
             
             # Generate response
-            prompt = self.prompt.format(
+            prompt = self.prompt2.format(
                 context=context,
                 question=message,
-                user_name=self.user_name,
-                user_email=self.user_email
+                chat_history=self.format_chat_history()
             )
             
             if args.debugLog:
                 response_start = time.perf_counter()
             
+            intermediate_response = self.query_llm(prompt)
+            #Create a prompt with the intermediate response
+            prompt = self.prompt2.format(
+                context=intermediate_response,
+                question=message,
+                chat_history=self.format_chat_history()
+            )
             response = self.query_llm(prompt)
             
             if args.debugLog:
@@ -567,13 +599,12 @@ class EmailChatBot:
                 log_debug(f"  Response time: {response_time:.3f} seconds")
                 log_debug(f"  {response}")
             
-            # Update chat history
-            self.chat_history.append({"role": "user", "content": message})
-            self.chat_history.append({"role": "assistant", "content": response})
+            # Update chat history and memory
+            self._update_chat_history(message, response)
             
             return response
         except Exception as e:
-            error_msg = f"Error in chat_simple: {str(e)}\nError type: {type(e)}\n"
+            error_msg = f"Error in chat_custom: {str(e)}\nError type: {type(e)}\n"
             if args.debugLog:
                 error_msg += f"Traceback: {traceback.format_exc()}"
             log_error(error_msg)
@@ -851,7 +882,7 @@ def create_chat_interface():
                 return "", history + [{"role": "assistant", "content": "Mistral reranker is not ready. Please start it first or choose a different reranking method."}]
             
             if method == "Simple RAG":
-                bot_response = bot.chat_simple(message, rerank_method=rerank_method)
+                bot_response = bot.chat_custom(message, rerank_method=rerank_method)
             else:
                 bot_response = bot.chat_chain(message, rerank_method=rerank_method)
             

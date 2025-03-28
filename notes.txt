@@ -5,12 +5,27 @@ mkdir -p "$LOCAL_NIM_CACHE"
 chmod 777 "$LOCAL_NIM_CACHE"
 
 docker run -d --name meta-llama3-8b-instruct --gpus all -e NGC_API_KEY -v "$LOCAL_NIM_CACHE:/opt/nim/.cache" -u $(id -u) -p 8000:8000 nvcr.io/nim/meta/llama3-8b-instruct:1.0.0
+docker run --rm -it --name meta-llama3-8b-instruct --gpus all -e NGC_API_KEY -v "$LOCAL_NIM_CACHE:/opt/nim/.cache" -u $(id -u) -p 8000:8000 nvcr.io/nim/meta/llama3-8b-instruct:1.0.0
 
 curl -X 'POST' \
    "http://0.0.0.0:8000/v1/completions" \
    -H "accept: application/json" \
    -H "Content-Type: application/json" \
    -d '{"model": "meta/llama3-8b-instruct", "prompt": "Once upon a time", "max_tokens": 64}'
+
+
+WARNING 03-27 06:09:08.948 logging.py:314] Special tokens have been added in the vocabulary, make sure the associated word embeddings are fine-tuned or trained.
+INFO 03-27 06:09:08.957 api_server.py:456] Serving endpoints:
+  0.0.0.0:8000/openapi.json
+  0.0.0.0:8000/docs
+  0.0.0.0:8000/docs/oauth2-redirect
+  0.0.0.0:8000/metrics
+  0.0.0.0:8000/v1/health/ready
+  0.0.0.0:8000/v1/health/live
+  0.0.0.0:8000/v1/models
+  0.0.0.0:8000/v1/version
+  0.0.0.0:8000/v1/chat/completions
+  0.0.0.0:8000/v1/completions
 
 
 Embedding Model: NV-Embed-QA, 
@@ -99,6 +114,8 @@ Links
 https://python.langchain.com/docs/tutorials/rag/ 
 
 https://blog.epsilla.com/advanced-rag-optimization-boosting-answer-quality-on-complex-questions-through-query-decomposition-e9d836eaf0d5
+
+https://haystack.deepset.ai/cookbook/query_decomposition
 
 -----------------------
 
@@ -205,3 +222,23 @@ print(response["answer"])
             Answer:"""),
             MessagesPlaceholder(variable_name="chat_history")
         ])
+
+-----------------------------
+
+Llama 3 8B special tokens:
+<|begin_of_text|>: Marks the start of the input.
+
+<|start_header_id|>system<|end_header_id>: Denotes the beginning of a system message.
+<|eot_id|>: Indicates the end of a turn or text (end of transmission).
+<|end_of_text|>: Marks the end of the entire sequence.
+
+
+
+
+
+<|begin_of_text|><|start_header_id|>system<|end_header_id|> You are an
+AI assistant that rephrases questions concisely without adding extra
+information.<|eot_id|><|start_header_id|>user<|end_header_id|> Rephrase the
+following question and return only a single concise response: What is Gopal
+Srinivasan's email?<|eot_id|><|start_header_id|>assistant<|end_header_id>
+<|end_of_text|>
