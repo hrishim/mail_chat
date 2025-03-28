@@ -38,6 +38,11 @@ This project leverages LangChain's modern modular architecture:
 - `langchain_community.vectorstores` for FAISS integration
 These are part of LangChain's modularization effort and require specific versions as listed in `requirements.txt`
 
+## Documentation
+
+Additional documentation can be found in the `docs` directory:
+- [RAG Implementation Details](docs/rag-implementation.md) - Details about the RAG system implementation and learnings
+
 ## Installation
 
 ### Prerequisites
