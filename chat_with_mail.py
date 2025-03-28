@@ -13,11 +13,10 @@ from utils import log_debug, log_error, args
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 from langchain_community.vectorstores import FAISS
 from langchain_nvidia_ai_endpoints import ChatNVIDIA, NVIDIAEmbeddings
-from langchain.chains import ConversationalRetrievalChain, LLMChain
-from langchain.chains.conversational_retrieval.prompts import CONDENSE_QUESTION_PROMPT, QA_PROMPT
-from langchain.chains.question_answering import load_qa_chain
 from langchain.memory import ConversationBufferMemory
 import numpy as np
 import requests
@@ -350,7 +349,7 @@ class EmailChatBot:
             When they ask questions using "I" or "me", it refers to {self.user_name} ({self.user_email})."""
 
         # Create a custom QA prompt with user identity
-        custom_qa_prompt = PromptTemplate(
+        self.qa_prompt = PromptTemplate(
             template=f"""{self._base_system_prompt}
             
             Use the following pieces of context to answer the question at the end.
@@ -361,16 +360,24 @@ class EmailChatBot:
             
             Question: {{question}}
             
-            Answer:""",
-            input_variables=["context", "question"]
+            Answer:"""
         )
         
-        self.qa = ConversationalRetrievalChain.from_llm(
-            llm=self.llm,
-            retriever=self.vectorstore.as_retriever(),
-            chain_type="stuff",
-            memory=self.memory,
-            combine_docs_chain_kwargs={'prompt': custom_qa_prompt},
+        # Create the retrieval chain
+        self.retriever = self.vectorstore.as_retriever()
+        
+        # Define the RAG chain with chat history
+        self.qa = (
+            RunnablePassthrough.assign(
+                context=lambda input_dict: self.get_relevant_context(input_dict["question"], input_dict.get("rerank_method", "Cosine Similarity"))
+            )
+            | ChatPromptTemplate.from_messages([
+                ("system", self._base_system_prompt),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", "Context: {context}\n\nQuestion: {question}")
+            ])
+            | self.llm
+            | StrOutputParser()
         )
 
         # Create the custom RAG prompt
@@ -484,92 +491,42 @@ class EmailChatBot:
         self.memory.chat_memory.add_ai_message(response)
 
     def chat_chain(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
-        """Process a chat message using the ConversationalRetrievalChain."""
+        """Process a chat message using the retrieval chain."""
         try:
             if args.debugLog:
                 log_debug("\nProcessing query with chat_chain:")
                 log_debug(f"  Query: {message}")
-                log_debug(f"  Retrieval method: Conversational Chain")
                 log_debug(f"  Reranking method: {rerank_method}")
                 log_debug(f"  Number of documents: {self.num_docs}")
                 log_debug(f"  Reranking multiplier: {self.rerank_multiplier}")
             
-            if rerank_method != "No Reranking":
-                # Create a custom retriever that uses reranking
-                def get_relevant_documents(query: str, *, run_manager=None) -> List[Document]:
-                    if args.debugLog:
-                        start_time = time.perf_counter()
-                    
-                    # Get initial candidates
-                    docs = self.vectorstore.similarity_search(
-                        query,
-                        k=self.num_docs * self.rerank_multiplier
-                    )
-                    
-                    if args.debugLog:
-                        retrieval_time = time.perf_counter() - start_time
-                        # Log initial retrieval
-                        total_words = sum(len(doc.page_content.split()) for doc in docs)
-                        log_debug(f"\nInitial retrieval:")
-                        log_debug(f"  Number of documents: {len(docs)}")
-                        log_debug(f"  Total words: {total_words}")
-                        for i, doc in enumerate(docs):
-                            log_debug(f"\nDocument {i+1}:")
-                            log_debug(f"  Word count: {len(doc.page_content.split())}")
-                            log_debug(f"  Content: {doc.page_content}")
-                    
-                    # Apply selected reranking method
-                    if rerank_method == "Mistral Reranker":
-                        reranked_docs = self.mistral_rerank(query, docs, self.num_docs)
-                    else:  # Cosine Similarity
-                        reranked_docs = self.cosine_rerank(query, docs, self.num_docs)
-                    
-                    if args.debugLog:
-                        # Log reranked results
-                        total_words = sum(len(doc.page_content.split()) for doc in reranked_docs)
-                        log_debug(f"\nAfter reranking:")
-                        log_debug(f"  Number of documents: {len(reranked_docs)}")
-                        log_debug(f"  Total words: {total_words}")
-                        for i, doc in enumerate(reranked_docs):
-                            log_debug(f"\nDocument {i+1}:")
-                            log_debug(f"  Word count: {len(doc.page_content.split())}")
-                            log_debug(f"  Content: {doc.page_content}")
-                    
-                    # Return the reranked documents
-                    return reranked_docs
-                
-                retriever = self.vectorstore.as_retriever()
-                retriever._get_relevant_documents = get_relevant_documents
-                self.qa.retriever = retriever
-            else:
-                # Log that we're using standard retrieval
-                if args.debugLog:
-                    log_debug("\nUsing standard retrieval without reranking")
+            # Format chat history for the chain
+            formatted_history = []
+            for msg in self.chat_history:
+                if msg["role"] == "user":
+                    formatted_history.append(HumanMessage(content=msg["content"]))
+                else:
+                    formatted_history.append(AIMessage(content=msg["content"]))
             
-            # Generate response
-            if args.debugLog:
-                response_start = time.perf_counter()
+            # Invoke the RAG chain with context and chat history
+            response = self.qa.invoke({
+                "question": message,
+                "rerank_method": rerank_method,
+                "chat_history": formatted_history
+            })
             
-            result = self.qa.invoke({"question": message})
-            response = result.get("answer", "I apologize, but I couldn't generate a response.")
-            
-            if args.debugLog:
-                response_time = time.perf_counter() - response_start
-                log_debug(f"\nGenerated response:")
-                log_debug(f"  Response time: {response_time:.3f} seconds")
-                log_debug(f"  {response}")
-            
-            # Update chat history and memory
+            # Update chat history
             self._update_chat_history(message, response)
             
-            return response
-        except Exception as e:
-            error_msg = f"Error in chat_chain: {str(e)}\nError type: {type(e)}\n"
             if args.debugLog:
-                error_msg += f"Traceback: {traceback.format_exc()}"
+                log_debug(f"\nGenerated response: {response}")
+            
+            return response
+            
+        except Exception as e:
+            error_msg = f"Error in chat_chain: {str(e)}\n{traceback.format_exc()}"
             log_error(error_msg)
-            print(f"Line {inspect.currentframe().f_lineno}: {error_msg}")
-            return "I apologize, but I encountered an error while processing your request."
+            return "I encountered an error processing your request. Please try again."
 
     def chat_custom(self, message: str, rerank_method: str = "Cosine Similarity") -> str:
         """Process a chat message using custom RAG."""
