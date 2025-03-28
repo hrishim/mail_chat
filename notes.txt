@@ -117,6 +117,8 @@ https://blog.epsilla.com/advanced-rag-optimization-boosting-answer-quality-on-co
 
 https://haystack.deepset.ai/cookbook/query_decomposition
 
+https://python.langchain.com/docs/tutorials/rag/
+
 -----------------------
 
 # Import necessary modules

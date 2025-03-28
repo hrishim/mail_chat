@@ -139,7 +139,16 @@ def check_all_tokens(model_id="meta-llama/Meta-Llama-3-8B-Instruct", hf_token=No
         else:
             print(f"{token}: Not in vocabulary")
 
+
+import spacy
+nlp = spacy.load("en_core_web_sm")
+
+def disambiguate_entities(query, chunks):
+    doc = nlp(query)
+    people = [ent.text for ent in doc.ents if ent.label_ == "PERSON"]
+    return [chunk for chunk in chunks if any(p in str(chunk) for p in people)]
+
 if __name__ == "__main__":
     # Automatically load token from .env or environment
     check_all_tokens()
-
+    #disambiguate_entities("", [])

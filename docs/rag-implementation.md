@@ -13,11 +13,12 @@ The mail_chat project implements RAG using:
 ## Key Components
 
 ### Reranking System
-- Uses NVIDIAEmbeddings from `langchain_nvidia_ai_endpoints`
 - Implements cosine similarity scoring for document relevance
-- Supports both Simple RAG and Conversational Chain methods
+- I intend to use NVIDIAEmbeddings from `langchain_nvidia_ai_endpoints`
 
 ### Vector Store
+Notes for when you explore different chunking and embedding strategies
+
 - Uses FAISS from `langchain_community.vectorstores`
 - Stores and retrieves email chunks efficiently
 - Enables semantic search capabilities

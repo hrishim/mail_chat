@@ -296,8 +296,27 @@ class EmailChatBot:
             if args.debugLog:
                 log_debug(f"  Reranked to {len(docs)} documents")
         
+        # Get surrounding chunks for each document
+        enhanced_docs = []
+        for doc in docs:
+            # Get document index from metadata if available
+            doc_idx = doc.metadata.get('doc_idx', -1)
+            if doc_idx != -1:
+                # Get 2 chunks before and after
+                start_idx = max(0, doc_idx - 2)
+                end_idx = doc_idx + 3  # +3 to include the current chunk
+                
+                # Get surrounding chunks using FAISS index
+                surrounding_docs = self.vectorstore.docstore.get_range(start_idx, end_idx)
+                if surrounding_docs:
+                    # Sort by index to maintain order
+                    surrounding_docs.sort(key=lambda x: x.metadata.get('doc_idx', -1))
+                    # Combine text in order
+                    doc.page_content = "\n".join(d.page_content for d in surrounding_docs)
+            enhanced_docs.append(doc)
+        
         # Combine document contents
-        context = "\n\n".join(doc.page_content for doc in docs)
+        context = "\n\n".join(doc.page_content for doc in enhanced_docs)
         if args.debugLog:
             log_debug(f"  Final context word count: {len(context.split())}")
         return context
@@ -375,12 +394,12 @@ class EmailChatBot:
             
             Use the following pieces of context to answer the question at the end.
             If you don't know the answer, just say that you don't know, don't try to make up an answer.
-            Keep answers short and direct. Do not include system messages, UI prompts, or follow-up questions.
-            Answer ONLY the question asked - no additional context or explanations.
+            Keep answers short and direct.
             
-            Context from emails: {{context}}
-
+            Context: {{context}}
+            
             Question: {{question}}
+            
             Answer:"""),
             MessagesPlaceholder(variable_name="chat_history")
         ])
@@ -584,13 +603,13 @@ class EmailChatBot:
             if args.debugLog:
                 response_start = time.perf_counter()
             
-            intermediate_response = self.query_llm(prompt)
+            #intermediate_response = self.query_llm(prompt)
             #Create a prompt with the intermediate response
-            prompt = self.prompt2.format(
-                context=intermediate_response,
-                question=message,
-                chat_history=self.format_chat_history()
-            )
+            #prompt = self.prompt2.format(
+                #context=intermediate_response,
+                #question=message,
+                #chat_history=self.format_chat_history()
+            #)
             response = self.query_llm(prompt)
             
             if args.debugLog:
