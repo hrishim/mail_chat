@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
+from langchain_core.tracers.stdout import ConsoleCallbackHandler
 from langchain_community.vectorstores import FAISS
 from langchain_nvidia_ai_endpoints import ChatNVIDIA, NVIDIAEmbeddings
 from langchain.memory import ConversationBufferMemory
@@ -335,7 +336,11 @@ class EmailChatBot:
             model="meta/llama3-8b-instruct",
             temperature=0.1,
             max_tokens=1000,
-            top_p=1.0
+            top_p=1.0,
+            verbose=True,  # Enable verbose logging
+            callbacks=[
+                ConsoleCallbackHandler()  # Remove color parameter
+            ]
         )
         
         self.memory = ConversationBufferMemory(
@@ -367,6 +372,29 @@ class EmailChatBot:
         self.retriever = self.vectorstore.as_retriever()
         
         # Define the RAG chain with chat history
+        def print_llm_input(x):
+            print("\nLLM_INPUT:", x)
+            print("\nLLM_INPUT type:", type(x))
+            # If it's a list of messages, print each one's role and content
+            if isinstance(x, list):
+                print("\nDetailed message structure:")
+                for msg in x:
+                    print(f"Role: {msg.type}")
+                    print(f"Content: {msg.content}\n")
+                # Show what actually gets sent to the API
+                messages = [{"role": msg.type, "content": msg.content} for msg in x]
+                print("\nActual API request format:")
+                print(json.dumps({
+                    "model": "meta/llama3-8b-instruct",
+                    "messages": messages
+                }, indent=2))
+            return x
+
+        def print_llm_output(x):
+            print("\nLLM_RAW:", x)
+            print("\nLLM_RAW type:", type(x))
+            return x
+
         self.qa = (
             RunnablePassthrough.assign(
                 context=lambda input_dict: self.get_relevant_context(input_dict["question"], input_dict.get("rerank_method", "Cosine Similarity"))
@@ -376,7 +404,9 @@ class EmailChatBot:
                 MessagesPlaceholder(variable_name="chat_history"),
                 ("human", "Context: {context}\n\nQuestion: {question}")
             ])
+            | (lambda x: (print_llm_input(x), x)[1])  # Print input to LLM
             | self.llm
+            | (lambda x: (print_llm_output(x), x)[1])  # Print output from LLM
             | StrOutputParser()
         )
 
