@@ -14,6 +14,7 @@ The mail_chat project implements RAG using:
 
 ### Picking the right data store
 
+### FAISS
 FAISS is not a traditional database, but rather a specialized library designed for efficient similarity search and clustering of high-dimensional data. It is focused primarily on 
 
 1. Vector indexing: FAISS creates optimized data structures to organize and store high-dimensional vectors efficiently.
@@ -26,6 +27,7 @@ This means, queries like these cannot be answered
 - "show me all emails from 2024"
 - "when did I last receive an email from abc@xxy.org"
 
+Unlike traditional databases that excel at exact matches and structured queries, FAISS is specifically tailored for approximate nearest neighbor search in vector spaces. It's particularly useful for applications involving embeddings, such as recommendation systems, image similarity, and natural language processing tasks where finding similar items based on their vector representations is crucial
 Essentially, FAISS is not ideal for the mail chat application.
 
 ### Reranking System
