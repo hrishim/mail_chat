@@ -14,6 +14,9 @@ The mail_chat project implements RAG using:
 
 ### Picking the right data store
 
+### Chroma
+Chroma is an **open-source vector database** specifically designed for storing and retrieving vector embeddings, along with **associated metadata**. It is widely used in AI applications such as semantic search, recommendation systems, and optimizing large language models (LLMs).
+
 ### FAISS
 FAISS is not a traditional database, but rather a specialized library designed for efficient similarity search and clustering of high-dimensional data. It is focused primarily on 
 
