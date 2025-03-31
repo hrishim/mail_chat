@@ -17,6 +17,15 @@ The mail_chat project implements RAG using:
 ### Chroma
 Chroma is an **open-source vector database** specifically designed for storing and retrieving vector embeddings, along with **associated metadata**. It is widely used in AI applications such as semantic search, recommendation systems, and optimizing large language models (LLMs).
 
+The RAG flow can be structured so that it can use Chroma as the vector store. The LLM can be used to generate the query that will be used to access Chroma database. The output can then be processed to retrieve the answer.
+
+So a query like "When did I last sent email to Gopal Srinivasan?" can be translated to a database query like 
+```
+"query='Gopal Srinivasan' filter=Comparison(comparator=<Comparator.EQ: 'eq'>, attribute='to', value='Gopal Srinivasan') limit=None
+```
+
+
+
 ### FAISS
 FAISS is not a traditional database, but rather a specialized library designed for efficient similarity search and clustering of high-dimensional data. It is focused primarily on 
 

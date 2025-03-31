@@ -5,6 +5,18 @@ from langchain.chains.query_constructor.base import (
     load_query_constructor_runnable
 )    
 
+examples = [
+    ( 
+        "What is the email address of Gopal Srinivasan?",
+        {
+            "query": "foo",
+            "filter": 'or(eq("to", "Gopal Srinivasan"),eq("sender", "Gopal Srinivasan"))'
+            
+        }
+    ),
+
+]
+
 attribute_info = [
     AttributeInfo(
         name="to",
@@ -58,6 +70,7 @@ attribute_info = [
     )
 ]
 
+doc_contents_breaks_lark = "Detailed description of an email, the to field, sender field, subject field, date field, content field, x_gmail_labels field, x_gm_thrid field, inReplyTo field, references field, message_id field"
 doc_contents= "Detailed description of an email"
 prompt = get_query_constructor_prompt(
     doc_contents,
