@@ -23,6 +23,21 @@ So a query like "When did I last sent email to Gopal Srinivasan?" can be transla
 ```
 "query='Gopal Srinivasan' filter=Comparison(comparator=<Comparator.EQ: 'eq'>, attribute='to', value='Gopal Srinivasan') limit=None
 ```
+using the LLM.
+
+Langchain has `load_query_constructor_runnable` which can be used to transform the query into a generic database query. This is intermediate database query is then translated to the actual query to be sent to the vector store once again using the LLM. In LangChain this is done by `SelfQueryRetriever`.
+
+Example:
+
+```python
+from langchain_community.query_constructors.chroma import ChromaTranslator
+
+retriever = SelfQueryRetriever(
+    query_constructor=query_constructor,
+    vectorstore=vectorstore,
+    structured_query_translator=ChromaTranslator(),
+)
+```
 
 
 
