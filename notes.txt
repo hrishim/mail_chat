@@ -119,7 +119,15 @@ https://haystack.deepset.ai/cookbook/query_decomposition
 
 https://python.langchain.com/docs/tutorials/rag/
 
+
+Data Retreivers:
+
 https://python.langchain.com/docs/tutorials/retrievers/
+
+Self-Query:
+https://python.langchain.com/docs/how_to/self_query/
+https://github.com/langchain-ai/langchain/blob/master/cookbook/self_query_hotel_search.ipynb
+
 
 -----------------------
 
