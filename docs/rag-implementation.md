@@ -12,6 +12,22 @@ The mail_chat project implements RAG using:
 
 ## Key Components
 
+### Picking the right data store
+
+FAISS is not a traditional database, but rather a specialized library designed for efficient similarity search and clustering of high-dimensional data. It is focused primarily on 
+
+1. Vector indexing: FAISS creates optimized data structures to organize and store high-dimensional vectors efficiently.
+2. Similarity search: It provides fast and accurate search capabilities for finding the most similar vectors to a query.
+3. Scalability: It is designed to handle large datasets and can scale to support millions of vectors.
+4 GPU Acceleration: Many of its algorithms are implemented to run efficiently on GPUs, making it suitable for large-scale applications.
+
+However, It lacks persistence and metadata filtering capabilities.
+This means, queries like these cannot be answered
+- "show me all emails from 2024"
+- "when did I last receive an email from abc@xxy.org"
+
+Essentially, FAISS is not ideal for the mail chat application.
+
 ### Reranking System
 - Implements cosine similarity scoring for document relevance
 - I intend to use NVIDIAEmbeddings from `langchain_nvidia_ai_endpoints`
