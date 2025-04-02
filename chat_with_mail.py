@@ -331,15 +331,49 @@ class EmailChatBot:
         )
 
         # Initialize the conversational chain components
+        class DebugCallbackHandler(ConsoleCallbackHandler):
+            """Custom callback handler that uses log_debug when debug is enabled"""
+            def __init__(self):
+                super().__init__()
+                self.debug_enabled = args.debugLog
+                self.print_function = log_debug if self.debug_enabled else print
+
+            def on_llm_start(self, *args, **kwargs):
+                if self.debug_enabled:
+                    super().on_llm_start(*args, **kwargs)
+
+            def on_llm_end(self, *args, **kwargs):
+                if self.debug_enabled:
+                    super().on_llm_end(*args, **kwargs)
+
+            def on_llm_error(self, *args, **kwargs):
+                if self.debug_enabled:
+                    super().on_llm_error(*args, **kwargs)
+
+            def on_chain_start(self, *args, **kwargs):
+                if self.debug_enabled:
+                    super().on_chain_start(*args, **kwargs)
+
+            def on_chain_end(self, *args, **kwargs):
+                if self.debug_enabled:
+                    super().on_chain_end(*args, **kwargs)
+
+            def on_chain_error(self, *args, **kwargs):
+                if self.debug_enabled:
+                    super().on_chain_error(*args, **kwargs)
+
+            def _print(self, content: str) -> None:
+                self.print_function(content)
+
         self.llm = ChatNVIDIA(
             base_url="http://0.0.0.0:8000/v1",
             model="meta/llama3-8b-instruct",
             temperature=0.1,
             max_tokens=1000,
             top_p=1.0,
-            verbose=True,  # Enable verbose logging
+            verbose=args.debugLog,  # Only enable verbose logging in debug mode
             callbacks=[
-                ConsoleCallbackHandler()  # Remove color parameter
+                DebugCallbackHandler()
             ]
         )
         
@@ -373,26 +407,28 @@ class EmailChatBot:
         
         # Define the RAG chain with chat history
         def print_llm_input(x):
-            print("\nLLM_INPUT:", x)
-            print("\nLLM_INPUT type:", type(x))
-            # If it's a list of messages, print each one's role and content
-            if isinstance(x, list):
-                print("\nDetailed message structure:")
-                for msg in x:
-                    print(f"Role: {msg.type}")
-                    print(f"Content: {msg.content}\n")
-                # Show what actually gets sent to the API
-                messages = [{"role": msg.type, "content": msg.content} for msg in x]
-                print("\nActual API request format:")
-                print(json.dumps({
-                    "model": "meta/llama3-8b-instruct",
-                    "messages": messages
-                }, indent=2))
+            if args.debugLog:
+                log_debug("\nLLM_INPUT:", x)
+                log_debug("\nLLM_INPUT type:", type(x))
+                # If it's a list of messages, print each one's role and content
+                if isinstance(x, list):
+                    log_debug("\nDetailed message structure:")
+                    for msg in x:
+                        log_debug(f"Role: {msg.type}")
+                        log_debug(f"Content: {msg.content}\n")
+                    # Show what actually gets sent to the API
+                    messages = [{"role": msg.type, "content": msg.content} for msg in x]
+                    log_debug("\nActual API request format:")
+                    log_debug(json.dumps({
+                        "model": "meta/llama3-8b-instruct",
+                        "messages": messages
+                    }, indent=2))
             return x
 
         def print_llm_output(x):
-            print("\nLLM_RAW:", x)
-            print("\nLLM_RAW type:", type(x))
+            if args.debugLog:
+                log_debug("\nLLM_RAW:", x)
+                log_debug("\nLLM_RAW type:", type(x))
             return x
 
         self.qa = (
