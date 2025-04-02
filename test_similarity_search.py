@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 import json
 import re
+import argparse
 from typing import List, Dict
 from langchain_core.documents import Document
 from email_searcher import EmailSearcher, SearchConfig
-from utils import log_debug
+from utils import log_debug, setup_debug_logging
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Test similarity search functionality")
+    parser.add_argument("--debugLog", type=str, help="Path to debug log file. If not specified, debug logging will be disabled.")
+    return parser.parse_args()
 
 def test_similarity_search(query: str, num_docs: int = 10, rerank_multiplier: int = 3, rerank_method: str = "Cosine Similarity"):
     """Test similarity search with different parameters and log results."""
-    # Initialize searcher
-    searcher = EmailSearcher()
+    # Initialize searcher with debug logging if enabled
+    searcher = EmailSearcher(debug_log=True)
     
     # Create search config
     config = SearchConfig(
@@ -55,6 +62,9 @@ def test_similarity_search(query: str, num_docs: int = 10, rerank_multiplier: in
         print(f"Content preview: {doc.page_content[:200]}...")
 
 if __name__ == "__main__":
+    args = parse_args()
+    setup_debug_logging(args.debugLog)
+    
     # Example queries to test
     test_queries = [
         "Where did I pay FASTag Toll on 2 Dec 2024?",  

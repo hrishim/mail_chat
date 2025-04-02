@@ -666,7 +666,7 @@ def create_chat_interface():
         'vectordb_path': os.getenv("VECTOR_DB", "./mail_vectordb"),
         'user_name': os.getenv("USER_FULLNAME", "YOUR_NAME"),
         'user_email': os.getenv("USER_EMAIL", "YOUR_EMAIL"),
-        'num_docs': 4,
+        'num_docs': 10,
         'rerank_multiplier': 3
     }
     
