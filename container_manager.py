@@ -5,18 +5,70 @@ from typing import Optional
 from utils import log_debug, args
 
 class ContainerManager:
-    """Class to manage Docker container operations."""
+    """A utility class for managing Docker containers running AI models.
+
+    This class provides a high-level interface for managing Docker containers,
+    specifically designed for AI model containers that expose health endpoints.
+    It handles container lifecycle operations including:
+    - Starting containers with proper GPU and cache configurations
+    - Stopping and cleaning up containers
+    - Monitoring container health and readiness states
+    
+    Features:
+    - GPU support with proper NVIDIA configurations
+    - NGC (NVIDIA GPU Cloud) authentication handling
+    - Shared memory and IPC configurations for optimal performance
+    - Health endpoint monitoring for model readiness
+    - Automatic NIM cache directory management
+    - Debug logging support
+    
+    Example Usage:
+        ```python
+        # Start an NGC container
+        status = ContainerManager.start_container(
+            container_name="llm-model",
+            image="nvcr.io/nvidia/model:latest",
+            port=8000,
+            ngc_key="your-ngc-key"
+        )
+        
+        # Check container status
+        status = ContainerManager.check_container_status("llm-model")
+        
+        # Stop container when done
+        status = ContainerManager.stop_container("llm-model")
+        ```
+    
+    Note:
+        - All methods are static for standalone usage
+        - Requires Docker daemon to be running
+        - GPU support requires NVIDIA Container Toolkit
+        - Debug logging can be enabled via args.debugLog
+    """
     
     @staticmethod
     def check_container_status(container_name: str, health_port: int = 8000) -> str:
-        """Get the current status of a container.
+        """Check the operational status of a Docker container and its model readiness.
+        
+        This method performs a two-step status check:
+        1. Checks if the container is running using Docker commands
+        2. If running, queries the container's health endpoint to verify model readiness
         
         Args:
             container_name: Name of the Docker container to check
             health_port: Port number for the health endpoint (default: 8000 for LLM, use 8001 for reranker)
             
         Returns:
-            str: Status of the container ('stopped', 'starting', or 'ready')
+            str: One of three possible states:
+                - 'stopped': Container is not running
+                - 'starting': Container is running but model is not ready
+                - 'ready': Container is running and model is ready to serve
+                
+        Note:
+            - Uses Docker CLI commands to check container status
+            - Expects a health endpoint at /v1/health/ready
+            - Health check has a 2-second timeout
+            - Failed health checks return 'starting' to allow for model loading
         """
         try:
             # First check if container is running
@@ -57,16 +109,39 @@ class ContainerManager:
     @staticmethod
     def start_container(container_name: str, image: str, port: int, 
                        ngc_key: Optional[str] = None) -> str:
-        """Start a Docker container.
+        """Start a Docker container with proper configurations for AI model serving.
+        
+        This method handles the complete container startup process:
+        1. Checks if container already exists/running
+        2. Sets up NIM cache directory with proper permissions
+        3. Removes any existing stopped container with same name
+        4. Handles NGC authentication if required
+        5. Starts container with optimal configurations for GPU usage
         
         Args:
             container_name: Name to assign to the container
-            image: Docker image to use
-            port: Port to expose
-            ngc_key: NGC API key if required (default: None)
+            image: Docker image to use (supports NGC registry)
+            port: Port to expose for model serving
+            ngc_key: NGC API key for authenticated image pulls (default: None)
             
         Returns:
-            str: Status message
+            str: Status message indicating:
+                - Success: "Container starting..."
+                - Already running: "Container is already running"
+                - Error: Error message with details
+                
+        Container Configuration:
+            - GPU access enabled with --gpus all
+            - Shared memory size: 2GB
+            - Unlimited memlock
+            - Host IPC namespace
+            - User permissions matched to host user
+            - NIM cache mounted at /opt/nim/.cache
+            
+        Note:
+            - Requires Docker daemon with NVIDIA Container Toolkit
+            - NGC authentication is optional (only for NGC registry images)
+            - Creates ~/.cache/nim directory if it doesn't exist
         """
         try:
             if ContainerManager.check_container_status(container_name) != "stopped":
@@ -118,13 +193,25 @@ class ContainerManager:
 
     @staticmethod
     def stop_container(container_name: str) -> str:
-        """Stop a Docker container.
+        """Stop and remove a Docker container.
+        
+        This method performs a clean container shutdown by:
+        1. Stopping the running container
+        2. Removing the container to clean up resources
         
         Args:
             container_name: Name of the container to stop
             
         Returns:
-            str: Status message
+            str: Status message:
+                - Success: "Container stopped"
+                - Error: Error message with details
+                
+        Note:
+            - Uses 'docker stop' followed by 'docker rm'
+            - Safe to call on non-existent containers
+            - Waits for container to stop gracefully
+            - Removes container completely to avoid name conflicts
         """
         try:
             subprocess.run(["docker", "stop", container_name], check=True)

@@ -28,3 +28,5 @@ junk.txt
 # Test files with confidential data
 tests/test_queries_answers.json
 tests/test_results/
+# Temporary files
+temp.py
