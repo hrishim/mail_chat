@@ -19,11 +19,42 @@ class SearchConfig:
     return_full_threads: bool = True
 
 class EmailSearcher:
+    """A versatile email search engine that retrieves relevant email content from vector databases.
+    
+    The EmailSearcher class provides semantic search capabilities over email content using
+    vector similarity search. Currently implemented with FAISS as the primary vector store,
+    but designed to be extensible for other vector databases like Chroma in the future.
+    
+    Key Features:
+        - Semantic search using NVIDIA embeddings
+        - Cosine similarity based reranking
+        - Support for both chunk-level and full-thread retrieval
+        - Configurable search parameters via SearchConfig
+        
+    The search process involves:
+    1. Converting query to embeddings using NVIDIA's embedding model
+    2. Performing initial vector similarity search in FAISS
+    3. Optional reranking of results using cosine similarity
+    4. Optional retrieval of complete email threads
+    
+    Future extensions can implement alternative:
+        - Vector stores (e.g. Chroma, Pinecone)
+        - Embedding models
+        - Reranking methods
+        - Search strategies
+    """
     def __init__(self, debug_log: bool = False):
-        """Initialize EmailSearcher.
+        """Initialize EmailSearcher with NVIDIA embeddings and FAISS vector store.
         
         Args:
-            debug_log: Whether to enable debug logging
+            debug_log: Whether to enable debug logging for detailed search process information
+            
+        Raises:
+            ValueError: If NGC_API_KEY environment variable is not set
+            
+        Note:
+            Currently uses NVIDIA's NV-Embed-QA model for embeddings and FAISS for vector storage.
+            The vector store path can be configured via the VECTOR_DB environment variable.
         """
         self.debug_log = debug_log
         
@@ -49,7 +80,25 @@ class EmailSearcher:
         )
 
     def cosine_rerank(self, query: str, docs: List[Document], k: int) -> List[Document]:
-        """Rerank documents using cosine similarity."""
+        """Rerank documents using cosine similarity between query and document embeddings.
+        
+        This method provides a second level of refinement after the initial vector search.
+        It recomputes embeddings for both query and documents to calculate more precise
+        similarity scores.
+        
+        Args:
+            query: The search query string
+            docs: List of documents from initial vector search
+            k: Number of top documents to return after reranking
+            
+        Returns:
+            List[Document]: Top k documents sorted by cosine similarity to query
+            
+        Note:
+            Performance scales with number of input documents as it requires computing
+            embeddings for each document. Consider the rerank_multiplier in SearchConfig
+            to balance between quality and speed.
+        """
         if self.debug_log:
             log_debug("\nReranking with cosine similarity:")
             log_debug(f"  Query: {query}")
@@ -88,7 +137,22 @@ class EmailSearcher:
         return reranked_docs
 
     def get_full_thread(self, thread_id: str) -> Optional[Document]:
-        """Get the complete email thread for a given thread ID."""
+        """Reconstruct a complete email thread from its constituent chunks.
+        
+        Email threads are stored as chunks in the vector store for better semantic search.
+        This method retrieves and reassembles all chunks belonging to a thread ID.
+        
+        Args:
+            thread_id: Unique identifier for the email thread
+            
+        Returns:
+            Optional[Document]: A document containing the complete thread content if found,
+                              None if no chunks found for the thread_id
+            
+        Note:
+            The returned document includes metadata about the total number of chunks and
+            is marked with is_full_thread=True to distinguish it from chunk documents.
+        """
         if self.debug_log:
             log_debug(f"\nGetting full thread for ID: {thread_id}")
             start_time = time.perf_counter()
@@ -128,15 +192,27 @@ class EmailSearcher:
         return thread_doc
 
     def semantic_search(self, query: str, config: SearchConfig = None) -> List[Document]:
-        """
-        Search for relevant email documents using semantic similarity via FAISS.
+        """Search for relevant email content using semantic similarity.
+        
+        This is the main search method that orchestrates the complete search process:
+        1. Initial semantic search using FAISS vector similarity
+        2. Optional reranking using cosine similarity
+        3. Optional reconstruction of full email threads
         
         Args:
-            query: The search query
-            config: Search configuration. If None, default config will be used.
+            query: The search query string
+            config: Search configuration parameters. If None, uses default config
+                   See SearchConfig class for available parameters
             
         Returns:
-            List of relevant documents, either as chunks or full threads based on config.
+            List[Document]: Relevant documents, either as chunks or full threads based on config
+            
+        Note:
+            The search process is highly configurable through SearchConfig:
+            - num_docs: Number of results to return
+            - rerank_multiplier: Controls the quality vs speed tradeoff for reranking
+            - rerank_method: Whether to apply cosine similarity reranking
+            - return_full_threads: Whether to return complete email threads
         """
         if config is None:
             config = SearchConfig()
