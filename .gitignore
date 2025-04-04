@@ -25,3 +25,5 @@ hrishim_vectordb/
 processing_checkpoint.json
 junk.txt
 *.swp
+# Test files with confidential data
+tests/test_queries_answers.json

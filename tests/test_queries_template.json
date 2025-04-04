@@ -1,0 +1,28 @@
+{
+  "queries": [
+    {
+      "id": "fastag_toll",
+      "query": "Where did I pay FASTag Toll on 2 Dec 2024?"
+    },
+    {
+      "id": "filter_coffee",
+      "query": "Have I ordered from Filter Coffee?"
+    },
+    {
+      "id": "prabha_email",
+      "query": "What is Prabha Sundar's email?"
+    },
+    {
+      "id": "seshambal_email",
+      "query": "What is Seshambal's email?"
+    },
+    {
+      "id": "sathyavasu_email",
+      "query": "What is Sathyavasu's email"
+    },
+    {
+      "id": "axis_email",
+      "query": "What is Axis Bank's email?"
+    }
+  ]
+}
