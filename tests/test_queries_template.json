@@ -2,27 +2,38 @@
   "queries": [
     {
       "id": "fastag_toll",
-      "query": "Where did I pay FASTag Toll on 2 Dec 2024?"
+      "query": "Where did I pay FASTag Toll on 2 Dec 2024?",
+      "method": "simple_qa"
     },
     {
       "id": "filter_coffee",
-      "query": "Have I ordered from Filter Coffee?"
+      "query": "Have I ordered from Filter Coffee?",
+      "method": "simple_qa"
     },
     {
       "id": "prabha_email",
-      "query": "What is Prabha Sundar's email?"
+      "query": "What is Prabha Sundar's email?",
+      "method": "simple_qa"
     },
     {
       "id": "seshambal_email",
-      "query": "What is Seshambal's email?"
+      "query": "What is Seshambal's email?",
+      "method": "simple_qa"
     },
     {
       "id": "sathyavasu_email",
-      "query": "What is Sathyavasu's email"
+      "query": "What is Sathyavasu's email",
+      "method": "simple_qa"
     },
     {
       "id": "axis_email",
-      "query": "What is Axis Bank's email?"
+      "query": "What is Axis Bank's email?",
+      "method": "simple_qa"
+    },
+    {
+      "id": "multi_query_test",
+      "query": "Find emails about flight bookings in 2013",
+      "method": "multi_query"
     }
   ]
 }

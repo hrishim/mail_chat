@@ -13,8 +13,10 @@ from utils import setup_debug_logging, log_debug, log_error
 def parse_args():
     parser = argparse.ArgumentParser(description='Test retrievers with various queries')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    parser.add_argument('--output-dir', type=str, default='test_results',
-                       help='Directory to store test results')
+    parser.add_argument('--log-dir', type=str, required=True,
+                       help='Directory to store debug logs and test results')
+    parser.add_argument('--method', type=str, choices=['simple_qa', 'multi_query', 'all'],
+                       default='all', help='Which retriever method to test')
     return parser.parse_args()
 
 def wait_for_container(container_name: str, timeout: int = 300, check_interval: int = 20) -> bool:
@@ -70,15 +72,14 @@ def load_test_data() -> Tuple[List[Dict[str, str]], Dict[str, str]]:
     
     return queries, answers
 
-def save_test_results(results: Dict[str, Any], output_dir: str):
+def save_test_results(results: Dict[str, Any], output_dir: str, method: str, timestamp: str):
     """Save test results to a JSON file."""
     # Create output directory if it doesn't exist
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Create filename with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = output_path / f"retriever_test_results_{timestamp}.json"
+    # Create filename with timestamp and method
+    output_file = output_path / f"test_results_{method}_{timestamp}.json"
     
     with open(output_file, 'w') as f:
         json.dump(results, f, indent=2)
@@ -89,9 +90,11 @@ def test_retrievers():
     """Run tests on retrievers with various queries."""
     args = parse_args()
     
-    # Create output directory with timestamp
+    # Generate timestamp once for both debug log and results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(args.output_dir) / datetime.now().strftime("%Y%m%d")
+    
+    # Create output directory if it doesn't exist
+    output_dir = Path(args.log_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Setup debug logging to file if enabled
@@ -132,29 +135,48 @@ def test_retrievers():
         # Load test data
         queries, answers = load_test_data()
         
+        # Filter queries based on method argument
+        if args.method != 'all':
+            queries = [q for q in queries if q.get('method', 'simple_qa') == args.method]
+            
+        if not queries:
+            print(f"No test queries found for method: {args.method}")
+            return
+            
         # Run tests
         results = {
             "timestamp": datetime.now().isoformat(),
+            "method_tested": args.method,
             "test_results": []
         }
+        
+        print(f"\nTesting {args.method} retriever...")
         
         for query_data in queries:
             query_id = query_data["id"]
             query = query_data["query"]
             expected_answer = answers.get(query_id, "")
+            method = query_data.get("method", "simple_qa")
             
             print(f"\nTesting query: {query}")
             
             try:
-                response = retriever.simple_qa(query)
+                if method == "simple_qa":
+                    response = retriever.simple_qa(query)
+                elif method == "multi_query":
+                    response = retriever.multi_query(query)
+                else:
+                    raise ValueError(f"Unknown method: {method}")
+                    
                 results["test_results"].append({
                     "query_id": query_id,
                     "query": query,
+                    "method": method,
                     "response": response,
                     "expected_answer": expected_answer,
                     "success": True
                 })
-                print(f"Response: {response}")
+                print(f"Response ({method}): {response}")
                 if expected_answer:
                     print(f"Expected: {expected_answer}")
             except Exception as e:
@@ -163,12 +185,17 @@ def test_retrievers():
                 results["test_results"].append({
                     "query_id": query_id,
                     "query": query,
+                    "method": method,
                     "error": error_msg,
                     "success": False
                 })
         
-        # Save results
-        save_test_results(results, output_dir)
+        # Save results with method in filename
+        results_file = output_dir / f"test_results_{args.method}_{timestamp}.json"
+        with open(results_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        print(f"\nResults saved to {results_file}")
     
     finally:
         # Always stop container
