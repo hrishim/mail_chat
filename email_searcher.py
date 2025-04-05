@@ -310,6 +310,10 @@ class EmailSearcher:
                 'original_content_id': doc.metadata.get('full_content_id', '')
             })
             
+            # Preserve similarity score if it exists
+            if 'similarity_score' in doc.metadata:
+                split_metadata['similarity_score'] = doc.metadata['similarity_score']
+            
             split_docs.append(Document(
                 page_content=split,
                 metadata=split_metadata
@@ -391,7 +395,7 @@ class EmailSearcher:
         if self.debug_log:
             log_debug("Getting full threads for matched chunks:")
             thread_start_time = time.perf_counter()
-            
+        
         thread_docs = []
         seen_content_ids = set()
         
@@ -401,20 +405,23 @@ class EmailSearcher:
                 if self.debug_log:
                     log_debug(f"  Skipping chunk without full_content_id: {doc.metadata}")
                 continue
-            
+        
             if full_content_id in seen_content_ids:
                 if self.debug_log:
                     log_debug(f"  Skipping duplicate thread: {full_content_id}")
                 continue
-                
+            
             seen_content_ids.add(full_content_id)
             if self.debug_log:
                 log_debug(f"  Processing new thread: {full_content_id}")
-            
+        
             try:
                 thread_id, message_index = full_content_id.split('_')
                 thread_doc = self.get_full_thread(thread_id, int(message_index))
                 if thread_doc:
+                    # Copy similarity score from chunk to full thread
+                    if 'similarity_score' in doc.metadata:
+                        thread_doc.metadata['similarity_score'] = doc.metadata['similarity_score']
                     thread_docs.append(thread_doc)
                     if self.debug_log:
                         log_debug(f"    Added thread with {len(thread_doc.page_content)} chars")

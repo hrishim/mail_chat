@@ -58,7 +58,7 @@ def test_token_limiting(log_file=None):
     log_debug(f"Testing semantic search with query: {query}")
     
     config = SearchConfig(
-        num_docs=10,
+        num_docs=20,
         rerank_multiplier=3,
         rerank_method="Cosine Similarity",
         max_total_tokens=500  # Set a lower limit to test token limiting
@@ -78,6 +78,10 @@ def test_token_limiting(log_file=None):
         log_debug("\n=== DOCUMENT DETAILS ===")
         for i, doc in enumerate(result.documents):
             log_debug(f"\nDocument {i+1} of {len(result.documents)}:")
+            
+            # Show similarity score if available
+            if 'similarity_score' in doc.metadata:
+                log_debug(f"Similarity Score: {doc.metadata['similarity_score']:.4f}")
             
             # Show split information if this is a split document
             if doc.metadata.get('is_split'):
