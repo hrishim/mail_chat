@@ -73,6 +73,9 @@ class EmailSearcher:
         
         # Load vector store
         vectordb_path = os.getenv("VECTOR_DB", "./mail_vectordb")
+        if not os.path.exists(vectordb_path):
+            raise ValueError(f"Vector store path '{vectordb_path}' does not exist")
+            
         self.vectorstore = FAISS.load_local(
             vectordb_path,
             self.embeddings,
@@ -137,56 +140,79 @@ class EmailSearcher:
         return reranked_docs
 
     def get_full_thread(self, thread_id: str) -> Optional[Document]:
-        """Reconstruct a complete email thread from its constituent chunks.
-        
-        Email threads are stored as chunks in the vector store for better semantic search.
-        This method retrieves and reassembles all chunks belonging to a thread ID.
+        """Get all messages from a thread in chronological order.
         
         Args:
             thread_id: Unique identifier for the email thread
             
         Returns:
-            Optional[Document]: A document containing the complete thread content if found,
-                              None if no chunks found for the thread_id
-            
-        Note:
-            The returned document includes metadata about the total number of chunks and
-            is marked with is_full_thread=True to distinguish it from chunk documents.
+            Optional[Document]: A document containing the complete thread if found,
+                          None if no messages found for the thread_id
         """
         if self.debug_log:
             log_debug(f"\nGetting full thread for ID: {thread_id}")
             start_time = time.perf_counter()
             
-        # Get all chunks belonging to this thread
-        all_docs = []
+        # Get all messages in this thread
+        thread_messages = []
         for stored_doc in self.vectorstore.docstore._dict.values():
             if stored_doc.metadata.get('thread_id') == thread_id:
-                all_docs.append(stored_doc)
+                thread_messages.append(stored_doc)
         
-        if not all_docs:
+        if not thread_messages:
             if self.debug_log:
-                log_debug(f"  No documents found for thread ID: {thread_id}")
+                log_debug(f"  No messages found for thread ID: {thread_id}")
             return None
             
-        # Sort chunks by their position in the thread
-        all_docs.sort(key=lambda x: x.metadata.get('chunk_index', 0))
+        # Sort messages by their position in thread
+        thread_messages.sort(key=lambda x: x.metadata.get('thread_position', 0))
         
-        # Combine all chunks to reconstruct the full thread
-        full_thread_content = "\n".join(d.page_content for d in all_docs)
+        # Combine messages with headers
+        thread_content = []
+        for msg in thread_messages:
+            # Only add headers if they exist
+            headers = []
+            if msg.metadata.get('sender'):
+                headers.append(f"From: {msg.metadata['sender']}")
+            if msg.metadata.get('to'):
+                headers.append(f"To: {msg.metadata['to']}")
+            if msg.metadata.get('subject'):
+                headers.append(f"Subject: {msg.metadata['subject']}")
+            if msg.metadata.get('date'):
+                headers.append(f"Date: {msg.metadata['date']}")
+            if msg.metadata.get('x_gmail_labels'):
+                headers.append(f"Labels: {', '.join(msg.metadata['x_gmail_labels'])}")
+            
+            if headers:  # Only add headers if we have any
+                thread_content.append("\n".join(headers))
+                thread_content.append("")  # Empty line after headers
+            
+            # Add message content if it exists and isn't just whitespace
+            content = msg.page_content.strip()
+            if content:
+                thread_content.append(content)
+                thread_content.append("\n---Next Message in Thread---\n")
         
-        # Create a new document with the full thread content
+        # Remove the last separator if we added any content
+        if thread_content and thread_content[-1].strip() == "---Next Message in Thread---":
+            thread_content.pop()
+            if thread_content and not thread_content[-1].strip():  # Remove trailing empty line
+                thread_content.pop()
+        
+        # Create a new document with the full thread
         thread_doc = Document(
-            page_content=full_thread_content,
+            page_content="\n".join(thread_content),
             metadata={
+                **thread_messages[0].metadata,  # Use first message's metadata as base
                 'thread_id': thread_id,
-                'total_chunks': len(all_docs),
+                'num_messages': len(thread_messages),
                 'is_full_thread': True
             }
         )
         
         if self.debug_log:
             thread_time = time.perf_counter() - start_time
-            log_debug(f"  Retrieved thread with {len(all_docs)} chunks")
+            log_debug(f"  Retrieved thread with {len(thread_messages)} messages")
             log_debug(f"  Thread retrieval time: {thread_time:.3f} seconds")
             
         return thread_doc
@@ -265,5 +291,13 @@ class EmailSearcher:
             log_debug(f"  Retrieved {len(thread_docs)} full threads")
             log_debug(f"  Thread retrieval time: {thread_time:.3f} seconds")
             log_debug(f"  Total search time: {total_time:.3f} seconds")
+            
+            # Log full emails after reranking
+            log_debug("\nFull emails after reranking:")
+            for i, doc in enumerate(thread_docs, 1):
+                log_debug("--- Email %d start ---", i)
+                log_debug("Thread ID: %s", doc.metadata.get('thread_id'))
+                log_debug("Content:\n%s", doc.page_content)
+                log_debug("--- Email %d end ---\n", i)
         
         return thread_docs
