@@ -19,16 +19,14 @@ class SearchConfig:
     rerank_method: str = "Cosine Similarity"
     return_full_threads: bool = True
     max_total_tokens: int = 3000  # Default conservative limit for most LLMs
-    start_index: int = 0  # For pagination
     chunk_filter: Optional[dict] = None  # For filtering by chunk metadata
 
 class SearchResult(NamedTuple):
-    """Container for search results with pagination info."""
+    """Container for search results."""
     documents: List[Document]  # Documents that fit within token limit
     total_tokens: int          # Total tokens in returned documents
-    has_more: bool             # Whether there are more documents available
-    next_doc_index: int        # Index to start from for next page
     total_docs: int            # Total number of matching documents
+    split_docs: Dict[str, List[Document]] = {}  # Dictionary of document ID to list of split pieces
 
 class EmailSearcher:
     """A versatile email search engine that retrieves relevant email content from vector databases.
@@ -55,21 +53,27 @@ class EmailSearcher:
         - Reranking methods
         - Search strategies
     """
-    def __init__(self, debug_log: bool = False, testing: bool = False):
+    def __init__(self, debug_log: bool = False, log_file: str = None):
         """Initialize EmailSearcher with NVIDIA embeddings and FAISS vector store.
         
         Args:
             debug_log: Whether to enable debug logging for detailed search process information
-            testing: If True, skip loading the vector store (for testing purposes)
+            log_file: Path to the log file for debug logging. Required if debug_log is True
             
         Raises:
             ValueError: If NGC_API_KEY environment variable is not set
+            ValueError: If debug_log is True but log_file is not provided
             
         Note:
             Currently uses NVIDIA's NV-Embed-QA model for embeddings and FAISS for vector storage.
-            The vector store path can be configured via the VECTOR_DB environment variable.
+            The vector store path is read from the VECTOR_DB environment variable.
         """
         self.debug_log = debug_log
+        if debug_log and not log_file:
+            raise ValueError("log_file must be provided when debug_log is True")
+            
+        if debug_log:
+            log_debug("Initializing EmailSearcher")
         
         # Load environment variables from the project root directory
         project_root = os.path.dirname(os.path.abspath(__file__))
@@ -89,13 +93,6 @@ class EmailSearcher:
             api_key=ngc_key
         )
         
-        # Skip vector store loading for testing
-        if testing:
-            if self.debug_log:
-                log_debug("Testing mode: Skipping vector store loading")
-            self.vectorstore = None
-            return
-            
         # Load vector store
         raw_vector_db = os.environ.get("VECTOR_DB")
         if self.debug_log:
@@ -235,52 +232,51 @@ class EmailSearcher:
         self, 
         docs: List[Document], 
         max_tokens: int,
-        start_index: int = 0
+        num_docs: int = None
     ) -> SearchResult:
-        """Process documents to fit within token limit with pagination support.
+        """Process documents to fit within token limit.
         
         Args:
             docs: List of documents to process
-            max_tokens: Maximum total tokens allowed
-            start_index: Starting index for pagination
+            max_tokens: Maximum tokens allowed per document
+            num_docs: Maximum number of documents to return (including splits)
             
         Returns:
-            SearchResult containing documents that fit within token budget and pagination info
+            SearchResult containing documents (split if needed) and split document mapping
         """
         processed_docs = []
         total_tokens = 0
-        current_index = start_index
+        split_docs_map = {}  # Dictionary to track split documents by ID
         
-        for i, doc in enumerate(docs[start_index:], start=start_index):
-            current_index = i
+        for i, doc in enumerate(docs):
             doc_tokens = self.estimate_tokens(doc.page_content)
+            doc_id = doc.metadata.get('full_content_id', f"doc_{i}")
             
             if doc_tokens > max_tokens:
                 # If a single document is too large, split it
                 splits = self._split_document(doc, max_tokens)
-                for split_doc in splits:
-                    split_tokens = self.estimate_tokens(split_doc.page_content)
-                    if total_tokens + split_tokens <= max_tokens:
-                        processed_docs.append(split_doc)
-                        total_tokens += split_tokens
-                    else:
-                        break
+                
+                # Store all splits in the split_docs_map
+                split_docs_map[doc_id] = splits
+                
+                # Add all splits to processed docs
+                processed_docs.extend(splits)
+                total_tokens += sum(self.estimate_tokens(split.page_content) for split in splits)
             else:
-                if total_tokens + doc_tokens <= max_tokens:
-                    processed_docs.append(doc)
-                    total_tokens += doc_tokens
-                else:
-                    break
-        
-        has_more = current_index < len(docs) - 1
-        next_doc_index = current_index + 1 if has_more else -1
+                # Document fits within limit, add it as is
+                processed_docs.append(doc)
+                total_tokens += doc_tokens
+                
+            # Check if we've hit the document limit
+            if num_docs and len(processed_docs) >= num_docs:
+                processed_docs = processed_docs[:num_docs]
+                break
         
         return SearchResult(
             documents=processed_docs,
             total_tokens=total_tokens,
-            has_more=has_more,
-            next_doc_index=next_doc_index,
-            total_docs=len(docs)
+            total_docs=len(docs),
+            split_docs=split_docs_map
         )
 
     def _split_document(self, doc: Document, max_tokens: int) -> List[Document]:
@@ -344,24 +340,34 @@ class EmailSearcher:
             - rerank_method: Whether to apply cosine similarity reranking
             - return_full_threads: Whether to return complete email threads
             - max_total_tokens: Maximum total tokens to return
-            - start_index: Starting index for pagination
         """
         if config is None:
             config = SearchConfig()
-            
         if self.debug_log:
-            log_debug(f"\nSemantic searching for: {query}")
+            log_debug(f"Semantic searching for: {query}")
             log_debug(f"  Config: num_docs={config.num_docs}, rerank={config.rerank_method}, "
                      f"full_threads={config.return_full_threads}, "
-                     f"max_tokens={config.max_total_tokens}, "
-                     f"start_index={config.start_index}")
+                     f"max_tokens={config.max_total_tokens}")
             start_time = time.perf_counter()
         
         # Get initial matching chunks
         initial_k = config.num_docs if config.rerank_method == "No Reranking" else config.num_docs * config.rerank_multiplier
-        initial_docs = self.vectorstore.similarity_search(query, k=initial_k)
+        if self.debug_log:
+            log_debug(f"  Retrieving {initial_k} initial documents")
+            
+        try:
+            initial_docs = self.vectorstore.similarity_search(query, k=initial_k)
+            if self.debug_log:
+                log_debug(f"  Successfully retrieved {len(initial_docs)} documents")
+        except Exception as e:
+            if self.debug_log:
+                log_debug(f"  Error during similarity search: {str(e)}")
+            raise
         
         # Filter for chunk documents only
+        if self.debug_log:
+            log_debug(f"  Filtering for chunk documents")
+            
         initial_docs = [doc for doc in initial_docs if doc.metadata.get('is_chunk', False)]
         
         if self.debug_log:
@@ -374,14 +380,16 @@ class EmailSearcher:
         # Rerank chunks if selected
         if config.rerank_method != "No Reranking":
             initial_docs = self.cosine_rerank(query, initial_docs, config.num_docs)
+        if self.debug_log:
+            log_debug(f"  Successfully reranked {len(initial_docs)} documents")
         
         # Return chunks if full threads not requested
         if not config.return_full_threads:
-            return self._process_docs_with_limit(initial_docs, config.max_total_tokens, config.start_index)
+            return self._process_docs_with_limit(initial_docs, config.max_total_tokens, config.num_docs)
         
         # Get complete threads for matched chunks
         if self.debug_log:
-            log_debug("\nGetting full threads for matched chunks:")
+            log_debug("Getting full threads for matched chunks:")
             thread_start_time = time.perf_counter()
             
         thread_docs = []
@@ -389,30 +397,49 @@ class EmailSearcher:
         
         for doc in initial_docs:
             full_content_id = doc.metadata.get('full_content_id')
-            if not full_content_id or full_content_id in seen_content_ids:
+            if not full_content_id:
+                if self.debug_log:
+                    log_debug(f"  Skipping chunk without full_content_id: {doc.metadata}")
+                continue
+            
+            if full_content_id in seen_content_ids:
+                if self.debug_log:
+                    log_debug(f"  Skipping duplicate thread: {full_content_id}")
                 continue
                 
             seen_content_ids.add(full_content_id)
+            if self.debug_log:
+                log_debug(f"  Processing new thread: {full_content_id}")
             
             try:
                 thread_id, message_index = full_content_id.split('_')
                 thread_doc = self.get_full_thread(thread_id, int(message_index))
                 if thread_doc:
                     thread_docs.append(thread_doc)
+                    if self.debug_log:
+                        log_debug(f"    Added thread with {len(thread_doc.page_content)} chars")
+                else:
+                    if self.debug_log:
+                        log_debug(f"    No thread document found for {full_content_id}")
             except ValueError:
                 if self.debug_log:
                     log_debug(f"  Invalid full_content_id format: {full_content_id}")
                 continue
         
         # Process thread documents with token limit
-        result = self._process_docs_with_limit(thread_docs, config.max_total_tokens, config.start_index)
+        if self.debug_log:
+            log_debug("Processing thread documents:")
+            log_debug(f"  Number of threads to process: {len(thread_docs)}")
+            log_debug(f"  Max total tokens: {config.max_total_tokens}")
+            
+        result = self._process_docs_with_limit(thread_docs, config.max_total_tokens, config.num_docs)
         
         if self.debug_log:
             thread_time = time.perf_counter() - thread_start_time
             total_time = time.perf_counter() - start_time
             log_debug(f"  Retrieved {len(result.documents)} of {result.total_docs} full threads")
             log_debug(f"  Total tokens: {result.total_tokens}")
-            log_debug(f"  Has more: {result.has_more}")
+            log_debug(f"  Total split documents: {sum(len(splits) for splits in result.split_docs.values())}")
             log_debug(f"  Thread retrieval time: {thread_time:.3f} seconds")
             log_debug(f"  Total search time: {total_time:.3f} seconds")
             
@@ -423,5 +450,11 @@ class EmailSearcher:
                 log_debug("Thread ID: %s", doc.metadata.get('thread_id'))
                 log_debug("Content:\n%s", doc.page_content)
                 log_debug("--- Email %d end ---\n", i)
+            
+            # Log split documents
+            if result.split_docs:
+                log_debug("\nSplit documents:")
+                for doc_id, splits in result.split_docs.items():
+                    log_debug(f"Document {doc_id} split into {len(splits)} parts")
         
         return result
