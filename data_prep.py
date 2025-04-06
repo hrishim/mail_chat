@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 from mailbox import mboxMessage
-from typing import Optional, Generator, Union
+from typing import Optional, Generator, Union, Literal, Any, Dict
 import json
 import mailbox
 from email import message_from_bytes
@@ -16,8 +16,10 @@ from functools import lru_cache
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS, Chroma
+from langchain_community.vectorstores.utils import filter_complex_metadata
 from langchain_core.documents import Document
+from langchain_core.vectorstores import VectorStore
 
 # Load environment variables from .env file
 load_dotenv()
@@ -750,12 +752,106 @@ def process_thread_batch(thread_batch: list[list[Message]]) -> list[Document]:
     
     return documents
 
+def prepare_chroma_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Prepare metadata for Chroma by converting lists to strings and filtering complex types.
+    
+    Args:
+        metadata: Original metadata dictionary
+        
+    Returns:
+        Filtered metadata dictionary with only simple types
+    """
+    # Convert lists to strings and filter out complex types
+    converted = {}
+    for key, value in metadata.items():
+        if isinstance(value, list):
+            converted[key] = ', '.join(str(v) for v in value)
+        elif isinstance(value, (str, int, float, bool)):
+            converted[key] = value
+            
+    return converted
+
+def create_chroma_document(doc: Document) -> Document:
+    """Create a new document with Chroma-compatible metadata.
+    
+    Args:
+        doc: Original document
+        
+    Returns:
+        New document with filtered metadata
+    """
+    return Document(
+        page_content=doc.page_content,
+        metadata=prepare_chroma_metadata(doc.metadata)
+    )
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Process email threads from mbox file.')
     parser.add_argument('mbox_file', help='Path to mbox file')
     parser.add_argument('--vectordb-dir', default='./mail_vectordb',
                       help='Directory to store vector database')
+    parser.add_argument('--db-type', choices=['faiss', 'chroma'], default='faiss',
+                      help='Type of vector database to use (faiss or chroma)')
     return parser.parse_args()
+
+def create_vectorstore(db_type: Literal['faiss', 'chroma'], 
+                      documents: list[Document], 
+                      embeddings,
+                      persist_dir: str) -> tuple[VectorStore, Optional[VectorStore]]:
+    """Create vector stores based on the specified type.
+    
+    Args:
+        db_type: Type of vector store to create ('faiss' or 'chroma')
+        documents: List of documents to add to the store
+        embeddings: Embedding function to use
+        persist_dir: Directory to persist the vector stores
+        
+    Returns:
+        Tuple of (chunks_store, full_docs_store). For FAISS, full_docs_store is None
+        as full documents are stored in the chunks_store's docstore.
+    """
+    if db_type == 'faiss':
+        store = FAISS.from_documents(documents, embeddings)
+        return store, None
+    else:  # chroma
+        # Create chunks collection
+        chunks_store = Chroma.from_documents(
+            documents,
+            embeddings,
+            persist_directory=persist_dir,
+            collection_name="email_chunks"
+        )
+        
+        # Create full emails collection (no embeddings needed)
+        full_docs_store = Chroma(
+            persist_directory=persist_dir,
+            embedding_function=embeddings,  # Required but won't be used
+            collection_name="full_emails"
+        )
+        return chunks_store, full_docs_store
+
+def add_documents_to_vectorstore(chunks_store: VectorStore,
+                               full_docs_store: Optional[VectorStore],
+                               documents: list[Document],
+                               db_type: Literal['faiss', 'chroma'],
+                               persist_dir: str):
+    """Add documents to existing vector stores.
+    
+    Args:
+        chunks_store: Store for email chunks
+        full_docs_store: Store for full emails (None for FAISS)
+        documents: List of documents to add
+        db_type: Type of vector store ('faiss' or 'chroma')
+        persist_dir: Directory to persist the vector stores
+    """
+    if db_type == 'faiss':
+        chunks_store.add_documents(documents)
+        chunks_store.save_local(persist_dir)
+    else:  # chroma
+        chunks_store.add_documents(documents)
+        chunks_store.persist()
+        if full_docs_store:
+            full_docs_store.persist()
 
 def main():
     """Main entry point."""
@@ -764,7 +860,7 @@ def main():
     all_documents = []  # Keep track of all documents
     total_threads = 0
     
-    print("Processing mbox file...")
+    print(f"Processing mbox file using {args.db_type} database...")
     try:
         # Process messages sequentially
         for thread_batch in get_thread_batches(args.mbox_file):
@@ -783,7 +879,7 @@ def main():
                     for doc in all_documents 
                     if not doc.metadata.get('is_chunk', False)}
         
-        print(f"Creating vectorstore with {len(chunks)} chunks...")
+        print(f"Creating {args.db_type} vectorstore with {len(chunks)} chunks...")
         embeddings = NVIDIAEmbeddings(
             model="NV-Embed-QA",
             api_key=os.getenv("NGC_API_KEY")
@@ -791,41 +887,81 @@ def main():
         
         # Process chunks in batches to avoid memory issues
         batch_size = 1000
-        vectorstore = None
         
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i+batch_size]
-            print(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1} ({len(batch)} chunks)...")
-            
-            if vectorstore is None:
-                # First batch - create new vectorstore
-                vectorstore = FAISS.from_documents(
-                    batch,
-                    embeddings,
-                )
-            else:
-                # Subsequent batches - add to existing vectorstore
-                vectorstore.add_documents(batch)
+        if args.db_type == 'faiss':
+            # Original FAISS implementation
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i:i+batch_size]
+                print(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1} ({len(batch)} chunks)...")
                 
-            # Save progress after each batch
-            print(f"Saving progress to {args.vectordb_dir}...")
-            os.makedirs(args.vectordb_dir, exist_ok=True)
+                if vectorstore is None:
+                    # First batch - create new vectorstore
+                    vectorstore = FAISS.from_documents(batch, embeddings)
+                else:
+                    # Subsequent batches - add to existing vectorstore
+                    vectorstore.add_documents(batch)
+                
+                # Save progress after each batch
+                print(f"Saving progress to {args.vectordb_dir}...")
+                os.makedirs(args.vectordb_dir, exist_ok=True)
+                vectorstore.save_local(args.vectordb_dir)
+            
+            # Add full documents to docstore without embedding them
+            print(f"Adding {len(full_docs)} full documents to docstore...")
+            for full_doc_id, full_doc in full_docs.items():
+                vectorstore.docstore._dict[f"full_{full_doc_id}"] = full_doc
+            
+            print(f"Saving final vectorstore to {args.vectordb_dir}...")
             vectorstore.save_local(args.vectordb_dir)
-        
-        # Add full documents to docstore without embedding them
-        print(f"Adding {len(full_docs)} full documents to docstore...")
-        for full_doc_id, full_doc in full_docs.items():
-            vectorstore.docstore._dict[f"full_{full_doc_id}"] = full_doc
-        
-        print(f"Saving final vectorstore to {args.vectordb_dir}...")
-        vectorstore.save_local(args.vectordb_dir)
+            
+        else:  # chroma
+            # Create Chroma collections
+            print("Creating email_chunks collection...")
+            chunks_store = Chroma.from_documents(
+                [create_chroma_document(doc) for doc in chunks[:batch_size]],  # First batch
+                embeddings,
+                persist_directory=args.vectordb_dir,
+                collection_name="email_chunks"
+            )
+            
+            # Add remaining chunks in batches
+            for i in range(batch_size, len(chunks), batch_size):
+                batch = [create_chroma_document(doc) for doc in chunks[i:i+batch_size]]
+                print(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1} ({len(batch)} chunks)...")
+                chunks_store.add_documents(batch)
+                chunks_store.persist()
+            
+            # Create and populate full_emails collection
+            print(f"Creating full_emails collection with {len(full_docs)} documents...")
+            full_docs_list = [create_chroma_document(doc) for doc in full_docs.values()]
+            full_docs_store = Chroma.from_documents(
+                full_docs_list,
+                embeddings,
+                persist_directory=args.vectordb_dir,
+                collection_name="full_emails"
+            )
+            
+            # Persist both collections
+            print(f"Saving final Chroma collections to {args.vectordb_dir}...")
+            chunks_store.persist()
+            full_docs_store.persist()
+            
+            # For error handling
+            vectorstore = chunks_store
+            
         print("Done!")
+        
     except Exception as e:
         print(f"Error processing mbox file: {e}")
         # Save progress on error
         if vectorstore is not None:
             print("Saving vector store state before exit...")
-            vectorstore.save_local(args.vectordb_dir)
+            if args.db_type == 'faiss':
+                vectorstore.save_local(args.vectordb_dir)
+            else:  # chroma
+                vectorstore.persist()
+                if 'full_docs_store' in locals() and full_docs_store:
+                    full_docs_store.persist()
         raise
 
 if __name__ == '__main__':
