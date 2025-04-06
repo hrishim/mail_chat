@@ -121,6 +121,8 @@ https://python.langchain.com/docs/tutorials/rag/
 
 https://python.langchain.com/docs/tutorials/retrievers/
 
+Self Query: https://python.langchain.com/docs/how_to/self_query/
+
 -----------------------
 
 # Import necessary modules
