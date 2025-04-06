@@ -1,28 +1,34 @@
+from multiprocessing import Pool, cpu_count
+import argparse
+import os
+from pathlib import Path
+from datetime import datetime, timezone
+from mailbox import mboxMessage
+from typing import Optional, Generator, Union
+import json
 import mailbox
 from email import message_from_bytes
 from email.header import decode_header, make_header
 from bs4 import BeautifulSoup
 import re
-import os, sys, shutil
-import argparse
-from os.path import exists
-from pathlib import Path
-from typing import Union, Optional, Generator
-from mailbox import mboxMessage
-from datetime import datetime
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-from langchain_core.documents import Document
-from dotenv import load_dotenv
-import multiprocessing
-from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
-import json
-from datetime import timezone
+
+from dotenv import load_dotenv
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Initialize text splitter with conservative settings for embedding
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=400,  # ~100 tokens
+    chunk_overlap=40,  # 10% overlap
+    length_function=len,
+    is_separator_regex=False
+)
 
 class Message:
     def __init__(self, to: str, sender:str, subject: str, date: str, 
@@ -41,17 +47,39 @@ class Message:
         self.message_id: str = message_id
 
     def __str__(self):
+        """Return just the content for string representation.
+        This is used for display purposes only."""
+        return self.content
+
+    def get_metadata(self) -> dict:
+        """Get all metadata as a dictionary for storage in Document."""
+        return {
+            'to': self.to,
+            'sender': self.sender,
+            'subject': self.subject,
+            'date': self.date,
+            'x_gmail_labels': self.x_gmail_labels,
+            'thread_id': self.x_gm_thrid,
+            'inReplyTo': self.inReplyTo,
+            'references': self.references,
+            'message_id': self.message_id
+        }
+
+    def to_document(self) -> Document:
+        """Convert Message to a LangChain Document with proper metadata separation."""
+        return Document(
+            page_content=self.content,
+            metadata=self.get_metadata()
+        )
+
+    def get_header_str(self) -> str:
+        """Get formatted header string for display purposes."""
         return (
-            f"Sender: {self.sender}\n"
+            f"From: {self.sender}\n"
             f"To: {self.to}\n"
             f"Subject: {self.subject}\n"
             f"Date: {self.date}\n"
-            f"x_gmail_labels: {self.x_gmail_labels}\n"
-            #f"x_gm_thrid: {self.x_gm_thrid}\n"
-            f"inReplyTo: {self.inReplyTo}\n"
-            f"References: {self.references}\n"
-            f"Message-ID: {self.message_id}\n"
-            f"Content: {self.content}"
+            f"Labels: {', '.join(self.x_gmail_labels)}"
         )
 
     @classmethod
@@ -76,14 +104,14 @@ class Message:
             # Parse and standardize the date
             date_str = str(message.get('Date', ''))
             if not date_str:
-                print("Warning: Message has no date, skipping")
-                return None
-            
-            try:
-                date = parse_email_date(date_str)
-            except ValueError:
-                print(f"Warning: Could not parse date '{date_str}', skipping message")
-                return None
+                print("Warning: Message has no date, using default date")
+                date = "1970-01-01 00:00:00+0000"
+            else:
+                try:
+                    date = parse_email_date(date_str)
+                except ValueError:
+                    print("Warning: Could not parse date, using default date")
+                    date = "1970-01-01 00:00:00+0000"
             
             # Properly decode headers
             def decode_header_str(header):
@@ -162,10 +190,13 @@ def parse_email_date(date_str: str) -> str:
     """
     if not date_str:
         raise ValueError("Empty date string")
-
+    
+    # Try to handle common variations
+    date_str = date_str.strip()
+    
     # Clean up parenthetical timezone names
     date_str = re.sub(r'\s*\([^)]+\)\s*$', '', date_str)
-
+    
     # Handle Unix-style timestamps with timezone but no space
     # e.g., "Thu Apr 16 20:59:04 2015+0530" -> "Thu Apr 16 20:59:04 2015 +0530"
     unix_tz_match = re.search(r'(\d{4})[+-]\d{4}$', date_str)
@@ -174,7 +205,17 @@ def parse_email_date(date_str: str) -> str:
         if year_pos != -1:
             year_end = year_pos + 4
             date_str = date_str[:year_end] + ' ' + date_str[year_end:]
-
+    
+    # Handle UT timezone
+    if ' UT' in date_str:
+        date_str = date_str.replace(' UT', ' +0000')
+    
+    # Handle GMT+HHMM format
+    if 'GMT+' in date_str:
+        parts = date_str.split('GMT+')
+        if len(parts) == 2:
+            date_str = parts[0] + '+' + parts[1]
+    
     # Map common timezone names to their UTC offsets
     tz_map = {
         'EDT': '-0400',  # Eastern Daylight Time
@@ -193,7 +234,7 @@ def parse_email_date(date_str: str) -> str:
         if f" {tz_name}" in date_str:
             date_str = date_str.replace(f" {tz_name}", f" {offset}")
             break
-
+    
     # Handle non-standard timezone offsets
     if (match := re.search(r'([+-])(\d{2}):?(\d{2})$', date_str)):
         sign, hours, mins = match.groups()
@@ -204,38 +245,60 @@ def parse_email_date(date_str: str) -> str:
             mins = "30"
         date_str = re.sub(r'[+-]\d{2}:?\d{2}$', f'{sign}{hours}{mins}', date_str)
     
-    # Try various email date formats
-    for fmt in [
-        '%a, %d %b %Y %H:%M:%S %z',  # Standard email format: 'Sun, 09 Feb 2025 09:37:31 -0800'
+    # List of date formats to try
+    formats = [
+        # RFC 2822 and common variants
+        '%a, %d %b %Y %H:%M:%S %z',  # Standard email format
         '%d %b %Y %H:%M:%S %z',      # Without weekday
         '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
         '%a, %d %b %Y %H:%M:%S',     # Without timezone
-        '%a %b %d %H:%M:%S %Y %z',   # Unix style with timezone: 'Fri Apr 17 00:16:47 2015 +0530'
-        '%a %b %d %H:%M:%S %Y',      # Unix style: 'Thu Mar 19 14:16:11 2025'
         '%a, %d %b %Y %H:%M %z',     # Without seconds
         '%d %b %Y %H:%M %z',         # Without seconds and weekday
-        '%d %b %y %H:%M:%S',         # Short year format: '06 Apr 15 21:57:41'
-        '%d %b %Y %H:%M:%S',         # Same but with full year
-        '%d %b %y %H:%M %z',         # Short year with timezone: '30 Jun 13 07:26 -0800'
-        '%a, %d %b %Y %H:%M:%S',     # Without timezone
-        '%a, %d %b %y %H:%M:%S %z',  # Short year with timezone
-        '%a, %d %b %y %H:%M:%S',     # Short year without timezone
-        '%a, %d %b %Y %H:%M',        # Without seconds or timezone
-        '%a %b %d %H:%M:%S %z %Y',   # Unix style with timezone before year
-    ]:
+        
+        # Unix style formats
+        '%a %b %d %H:%M:%S %Y %z',   # With timezone
+        '%a %b %d %H:%M:%S %Y',      # Without timezone
+        '%a %b %d %H:%M:%S %z %Y',   # Timezone before year
+        
+        # Short year formats
+        '%d %b %y %H:%M:%S',         # Basic short year
+        '%d %b %y %H:%M %z',         # Short year with timezone
+        '%a, %d %b %y %H:%M:%S %z',  # Full format with short year
+        '%a, %d %b %y %H:%M:%S',     # Without timezone
+        
+        # ISO formats
+        '%Y-%m-%d %H:%M:%S%z',       # With timezone
+        '%Y-%m-%d %H:%M:%S',         # Without timezone
+        
+        # Extra space variations
+        '%a,  %d %b %Y %H:%M:%S %z',  # Double space after comma
+        '%a,  %d %b %y %H:%M:%S %z',  # Double space with short year
+        '%a,  %d %b %Y %H:%M:%S',     # Double space without timezone
+        '%a,  %d %b %y %H:%M:%S',     # Double space, short year, no timezone
+        
+        # Special formats
+        '%a %b %d %H:%M:%S GMT%z %Y',  # GMT with offset
+        '%a %b %d %H:%M:%S %z %Y',     # Offset before year
+    ]
+    
+    # Try each format
+    for fmt in formats:
         try:
+            # Parse with current format
             dt = datetime.strptime(date_str, fmt)
+            
+            # If timezone is naive, assume UTC
             if dt.tzinfo is None:
-                # If no timezone, assume UTC
-                return dt.strftime('%Y-%m-%d %H:%M:%S+0000')
+                dt = dt.replace(tzinfo=timezone.utc)
+            
+            # Convert to our standard format
             return dt.strftime('%Y-%m-%d %H:%M:%S%z')
+            
         except ValueError:
             continue
-    
-    print(f"WARNING: Failed to parse date string: '{date_str}'")
-    print(f"Date string length: {len(date_str)}")
-    print(f"Date string bytes: {date_str.encode()}")
-    raise ValueError(f"Could not parse date string: '{date_str}'")
+            
+    # If we get here, none of our formats worked
+    raise ValueError(f"Failed to parse date string: '{date_str}'")
 
 def log_date_error(date_str: str, error_type: str = "Failed to parse") -> None:
     """Log date parsing errors to file with absolute path."""
@@ -244,8 +307,6 @@ def log_date_error(date_str: str, error_type: str = "Failed to parse") -> None:
         with open(error_log_path, 'a', encoding='utf-8') as f:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             f.write(f"[{timestamp}] {error_type}: '{date_str}'\n")
-            f.write(f"  Length: {len(date_str)}\n")
-            f.write(f"  Bytes: {date_str.encode()}\n")
             f.write(f"  Tried formats:\n")
             for fmt in [
                 '%Y-%m-%d %H:%M:%S%z',  # Our standard format
@@ -513,77 +574,6 @@ def load_mbox_in_chunks(file_path: Union[str, os.PathLike], batch_size: int = 10
     if messages:
         yield messages
 
-def chunk_thread_messages(thread_messages: list[Message], text_chunk_size: int = 400, chunk_overlap: int = 100) -> list[Document]:
-    """Chunks messages from a single thread while maintaining conversation context.
-    
-    This function is optimized for RAG by keeping related messages together in chunks.
-    Messages in the same thread are concatenated with clear separators before chunking.
-    
-    Args:
-        thread_messages: List of messages in a thread, assumed to be sorted by date
-        text_chunk_size: Maximum size of each text chunk in characters
-        chunk_overlap: Number of characters to overlap between chunks
-        
-    Returns:
-        List of Document objects containing chunks with their metadata
-    """
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=text_chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len,
-        separators=["\n\nFrom:", "\nFrom:", "\n\n", "\n", " ", ""]
-    )
-    
-    # Join messages with clear separators
-    thread_text = ""
-    for i, msg in enumerate(thread_messages):
-        thread_text += str(msg)
-        if i < len(thread_messages) - 1:
-            thread_text += "\n\n---Next Message in Thread---\n\n"
-    
-    # Create metadata for the thread
-    metadata = {
-        'thread_start_date': thread_messages[0].date,
-        'thread_end_date': thread_messages[-1].date,
-        'num_messages': len(thread_messages),
-        'participants': list(set([msg.sender for msg in thread_messages] + [msg.to for msg in thread_messages]))
-    }
-    
-    # Create documents with metadata
-    return text_splitter.create_documents([thread_text], [metadata])
-
-def print_msg_keys(file_path: os.PathLike) -> None:
-    mbox = mailbox.mbox(file_path)
-    first_message = next(iter(mbox.values()))
-    print(first_message.keys())
-   
-    #print(mbox[0])
-    #for i, msg in enumerate(mbox):
-        #print(f"---------- Message {i} ---------- ")
-        #print(msg)
-    
-
-def print_messages(file_path: Union[str, os.PathLike]) -> None:
-    messages = load_mbox(file_path)
-
-    for i, msg in enumerate(messages):
-        print(msg)
-    return
-    for i, msg in enumerate(messages):
-        print(f"Message {i+1}:")
-        print(f"From: {msg.sender}")
-        print(f"Subject: {msg.subject}")
-        print(f"Date: {msg.date}")
-        print(f"Content: {msg.content}")
-        print(f"X-Gmail-Labels: {msg.x_gmail_labels}")
-        print(f"X-GM-THRID: {msg.x_gm_thrid}")
-        print(f"In-Reply-To: {msg.inReplyTo}")
-        print(f"References: {msg.references}")
-        print(f"Message-ID: {msg.message_id}")
-
-        print("**************************************")
-
-
 def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
     """Organize messages by thread ID."""
     org_msgs: dict[str, list[Message]] = {}
@@ -601,6 +591,56 @@ def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
         org_msgs[key] = sorted(thread_messages, key=lambda msg: parse_date_for_sorting(msg.date))
     
     return org_msgs
+
+def get_thread_batches(mbox_file: str) -> Generator[list[list[Message]], None, None]:
+    """Get batches of threads from mbox file."""
+    current_batch = {}  # thread_id -> list[Message]
+    
+    try:
+        mbox = mailbox.mbox(mbox_file)
+        for idx, message in enumerate(mbox):
+            try:
+                msg = Message.from_email_message(message)
+                if msg is None:
+                    continue
+                
+                thread_id = msg.x_gm_thrid
+                if thread_id not in current_batch:
+                    current_batch[thread_id] = []
+                current_batch[thread_id].append(msg)
+                
+                # Yield when we have accumulated enough threads
+                if len(current_batch) >= 100:  # Process 100 threads at a time
+                    thread_batch = []
+                    for thread_messages in current_batch.values():
+                        # Sort messages by date
+                        thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date) or datetime.min.replace(tzinfo=timezone.utc))
+                        thread_batch.append(thread_messages)
+                    yield thread_batch
+                    current_batch = {}
+                    
+            except Exception as e:
+                print(f"Error processing message {idx}: {e}")
+                with open('date_fmt_error.txt', 'a') as f:
+                    f.write(f"Error in message {idx}: {e}\n")
+                continue
+        
+        # Yield remaining messages
+        if current_batch:
+            thread_batch = []
+            for thread_messages in current_batch.values():
+                # Sort messages by date
+                thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date) or datetime.min.replace(tzinfo=timezone.utc))
+                thread_batch.append(thread_messages)
+            yield thread_batch
+    
+    except Exception as e:
+        print(f"Error processing mbox file: {e}")
+        # Save progress on error
+        if vectorstore is not None:
+            print("Saving vector store state before exit...")
+            vectorstore.save_local(args.vectordb_dir)
+        raise
 
 def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_batch: int = 500, start_idx: int = 0) -> Generator[list[list[Message]], None, None]:
     """Load messages from mbox file and organize them by thread, yielding batches."""
@@ -654,231 +694,138 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_
             thread_batch.append(thread_messages)
         yield thread_batch
 
-def process_thread_batch(thread_batch: list[list[Message]], text_chunk_size: int, chunk_overlap: int) -> list[Document]:
-    """Process a single batch of threads into documents.
-    This function runs in a separate process."""
-    batch_documents = []
+def process_thread_batch(thread_batch: list[list[Message]]) -> list[Document]:
+    """Process a single batch of threads into documents."""
+    documents = []
     
     for thread_messages in thread_batch:
-        # Create chunks that maintain thread context
-        documents = chunk_thread_messages(
-            thread_messages,
-            text_chunk_size=text_chunk_size,
-            chunk_overlap=chunk_overlap
-        )
+        # Sort messages by date
+        thread_messages.sort(key=lambda x: parse_date_for_sorting(x.date))
         
-        # Add thread_id to each document's metadata
-        for i, doc in enumerate(documents):
-            doc.metadata['thread_id'] = thread_messages[0].x_gm_thrid
-            doc.metadata['chunk_index'] = i
-            doc.metadata['total_chunks'] = len(documents)
-            batch_documents.append(doc)
+        # Get thread context
+        thread_id = thread_messages[0].x_gm_thrid
+        thread_start_date = thread_messages[0].date
+        thread_end_date = thread_messages[-1].date
+        participants = list(set([msg.sender for msg in thread_messages] + [msg.to for msg in thread_messages]))
+        
+        for i, message in enumerate(thread_messages):
+            # Get base metadata from message
+            metadata = message.get_metadata()
+            
+            # Add thread context
+            metadata.update({
+                'thread_id': thread_id,
+                'thread_start_date': thread_start_date,
+                'thread_end_date': thread_end_date,
+                'thread_position': i,
+                'thread_length': len(thread_messages),
+                'participants': participants,
+                'is_chunk': False,  # Flag to indicate this is a full message
+                'full_content_id': f"{thread_id}_{i}"  # ID to link chunks back to full content
+            })
+            
+            # Create document with full content
+            full_doc = Document(
+                page_content=message.content,
+                metadata=metadata
+            )
+            documents.append(full_doc)
+            
+            # Create chunks for embedding
+            chunks = text_splitter.split_text(message.content)
+            for chunk_idx, chunk in enumerate(chunks):
+                chunk_metadata = metadata.copy()
+                chunk_metadata.update({
+                    'is_chunk': True,
+                    'chunk_index': chunk_idx,
+                    'total_chunks': len(chunks),
+                    'full_content_id': f"{thread_id}_{i}"  # Link back to full content
+                })
+                
+                chunk_doc = Document(
+                    page_content=chunk,
+                    metadata=chunk_metadata
+                )
+                documents.append(chunk_doc)
     
-    return batch_documents
+    return documents
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Process email threads from mbox file.')
+    parser.add_argument('mbox_file', help='Path to mbox file')
+    parser.add_argument('--vectordb-dir', default='./mail_vectordb',
+                      help='Directory to store vector database')
+    return parser.parse_args()
 
 def main():
-    """Process email threads from mbox file in memory-efficient chunks."""
-    parser = argparse.ArgumentParser(description='Process mbox file into threaded chunks for RAG.')
-    parser.add_argument('mbox_file', type=str, help='Path to the mbox file to process')
-    parser.add_argument('--vectordb-dir', required=True,
-                       help='Directory to save vector store in')
-    parser.add_argument('--threads-per-batch', type=int, default=500,
-                       help='Number of email threads to process in each batch (default: 500)')
-    parser.add_argument('--text-chunk-size', type=int, default=400,
-                       help='Maximum size of each text chunk in characters (default: 400, recommended for NV-Embed-QA)')
-    parser.add_argument('--chunk-overlap', type=int, default=100,
-                       help='Number of characters to overlap between chunks (default: 100)')
-    parser.add_argument('--save-frequency', type=int, default=5,
-                       help='Save vector store every N batches (default: 5)')
-    parser.add_argument('--num-processes', type=int, default=11,
-                       help='Number of processes to use (default: 11)')
-    parser.add_argument('--checkpoint-file', type=str, default='processing_checkpoint.json',
-                       help='File to store processing checkpoint (default: processing_checkpoint.json)')
-    parser.add_argument('--resume', action='store_true',
-                       help='Resume processing from last checkpoint')
+    """Main entry point."""
+    args = parse_args()
+    vectorstore = None
+    all_documents = []  # Keep track of all documents
+    total_threads = 0
     
-    args = parser.parse_args()
-    
-    # Check for NVIDIA AI Endpoints API key
-    api_key = os.getenv('NGC_API_KEY')
-    if not api_key:
-        print("Error: NGC_API_KEY environment variable not set")
-        print("Please set your NVIDIA AI Endpoints API key first")
-        sys.exit(1)
-    
-    # Create vector DB directory if it doesn't exist
-    vectordb_dir = Path(args.vectordb_dir)
-    vectordb_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Set number of processes
-    if args.num_processes is None:
-        args.num_processes = max(1, multiprocessing.cpu_count() - 1)
-    
-    # Initialize embeddings
+    print("Processing mbox file...")
     try:
+        # Process messages sequentially
+        for thread_batch in get_thread_batches(args.mbox_file):
+            # Process each batch
+            documents = process_thread_batch(thread_batch)
+            all_documents.extend(documents)  # Accumulate all documents
+            total_threads += len(thread_batch)
+            print(f"Processed batch: {len(documents)} documents from {len(thread_batch)} threads")
+            print(f"Running total: {len(all_documents)} documents from {total_threads} threads")
+            
+        print(f"\nTotal documents processed: {len(all_documents)}")
+        
+        # Separate chunks and full documents
+        chunks = [doc for doc in all_documents if doc.metadata.get('is_chunk', False)]
+        full_docs = {doc.metadata['full_content_id']: doc 
+                    for doc in all_documents 
+                    if not doc.metadata.get('is_chunk', False)}
+        
+        print(f"Creating vectorstore with {len(chunks)} chunks...")
         embeddings = NVIDIAEmbeddings(
             model="NV-Embed-QA",
-            truncate="END",
-            api_key=api_key,
-            api_url="https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions/e1c06c8d-f614-4af5-9e76-5f5d6d574e23"
+            api_key=os.getenv("NGC_API_KEY")
         )
-    except Exception as e:
-        print(f"Error initializing NVIDIA AI Endpoints: {e}")
-        print("Please check your API key and try again.")
-        sys.exit(1)
-    
-    # Load existing vector store if it exists
-    vectorstore = None
-    if vectordb_dir.exists() and any(vectordb_dir.iterdir()):
-        print(f"Loading existing vector store from {vectordb_dir}...")
-        try:
-            vectorstore = FAISS.load_local(
-                str(vectordb_dir),
-                embeddings,
-                allow_dangerous_deserialization=True  # Safe since we created these files
-            )
-            print("Existing vector store loaded successfully")
-        except Exception as e:
-            print(f"Warning: Could not load existing vector store: {e}")
-            print("Starting fresh...")
-    
-    # Load or initialize checkpoint
-    checkpoint_path = Path(args.checkpoint_file)
-    checkpoint = {}
-    if args.resume and checkpoint_path.exists():
-        try:
-            with open(checkpoint_path, 'r') as f:
-                checkpoint = json.load(f)
-                print(f"Resuming from checkpoint: {checkpoint['emails_processed']} emails processed")
-        except Exception as e:
-            print(f"Warning: Could not load checkpoint: {e}")
-            print("Starting from beginning...")
-            checkpoint = {'emails_processed': 0, 'last_message_id': None}
-    else:
-        checkpoint = {'emails_processed': 0, 'last_message_id': None}
-    
-    total_emails_processed = checkpoint['emails_processed']
-    total_chunks_processed = 0
-    batches_since_save = 0
-    
-    try:
-        # Create a process pool
-        with ProcessPoolExecutor(max_workers=args.num_processes) as executor:
-            thread_batches = []
-            futures = []
+        
+        # Process chunks in batches to avoid memory issues
+        batch_size = 1000
+        vectorstore = None
+        
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i+batch_size]
+            print(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1} ({len(batch)} chunks)...")
             
-            # Process emails in batches of threads
-            mbox = mailbox.mbox(args.mbox_file)
-            
-            # Skip to last processed message if resuming
-            start_idx = 0
-            if args.resume and checkpoint['last_message_id'] is not None:
-                for idx, msg in enumerate(mbox):
-                    if msg.get('Message-ID') == checkpoint['last_message_id']:
-                        start_idx = idx + 1
-                        print(f"Resuming from message {start_idx}")
-                        break
-            
-            for thread_batch in load_and_organize_in_chunks(args.mbox_file, threads_per_batch=args.threads_per_batch, start_idx=start_idx):
-                batch_email_count = sum(len(thread_messages) for thread_messages in thread_batch)
-                total_emails_processed += batch_email_count
-                
-                # Update checkpoint
-                last_message = None
-                for thread_messages in thread_batch:
-                    if thread_messages:
-                        last_message = thread_messages[-1]
-                if last_message:
-                    checkpoint['emails_processed'] = total_emails_processed
-                    checkpoint['last_message_id'] = last_message.message_id
-                    with open(checkpoint_path, 'w') as f:
-                        json.dump(checkpoint, f)
-                
-                num_threads = len(thread_batch)
-                print(f"\nCollected new batch:")
-                print(f"├── Threads: {num_threads}")
-                print(f"└── Emails: {batch_email_count} (avg {batch_email_count/num_threads:.1f} per thread)")
-                print(f"\nProgress:")
-                print(f"├── Total threads processed: {total_emails_processed//args.threads_per_batch * args.threads_per_batch}")
-                print(f"└── Total emails processed: {total_emails_processed}")
-                
-                # Submit batch for parallel processing
-                print(f"\nProcessing with {args.num_processes} workers...")
-                
-                future = executor.submit(
-                    process_thread_batch,
-                    thread_batch,
-                    args.text_chunk_size,
-                    args.chunk_overlap
+            if vectorstore is None:
+                # First batch - create new vectorstore
+                vectorstore = FAISS.from_documents(
+                    batch,
+                    embeddings,
                 )
-                futures.append(future)
-                thread_batches.append(thread_batch)
+            else:
+                # Subsequent batches - add to existing vectorstore
+                vectorstore.add_documents(batch)
                 
-                # Process results when we have enough batches or have completed futures
-                if len(futures) >= args.num_processes:
-                    # Process any completed futures
-                    done_futures = []
-                    for future in futures:
-                        if future.done():
-                            done_futures.append(future)
-                            batch_documents = future.result()
-                            
-                            # Create or update vector store
-                            if vectorstore is None:
-                                vectorstore = FAISS.from_documents(
-                                    documents=batch_documents,
-                                    embedding=embeddings
-                                )
-                            else:
-                                vectorstore.add_documents(batch_documents)
-                            
-                            total_chunks_processed += len(batch_documents)
-                            print(f"Processed {len(batch_documents)} chunks")
-                            print(f"Total chunks processed so far: {total_chunks_processed}")
-                            
-                            batches_since_save += 1
-                    
-                    # Remove processed futures
-                    for future in done_futures:
-                        futures.remove(future)
-                        
-                    # Save periodically to prevent data loss
-                    if batches_since_save >= args.save_frequency:
-                        print("Saving vector store...")
-                        vectorstore.save_local(str(vectordb_dir))
-                        batches_since_save = 0
-            
-            # Process any remaining futures
-            for future in futures:
-                batch_documents = future.result()
-                if vectorstore is None:
-                    vectorstore = FAISS.from_documents(
-                        documents=batch_documents,
-                        embedding=embeddings
-                    )
-                else:
-                    vectorstore.add_documents(batch_documents)
-                
-                total_chunks_processed += len(batch_documents)
-                print(f"Processed {len(batch_documents)} chunks")
-                print(f"Total chunks processed so far: {total_chunks_processed}")
+            # Save progress after each batch
+            print(f"Saving progress to {args.vectordb_dir}...")
+            os.makedirs(args.vectordb_dir, exist_ok=True)
+            vectorstore.save_local(args.vectordb_dir)
         
-        # Final save
-        if vectorstore is not None:
-            print("Saving final vector store state...")
-            vectorstore.save_local(str(vectordb_dir))
+        # Add full documents to docstore without embedding them
+        print(f"Adding {len(full_docs)} full documents to docstore...")
+        for full_doc_id, full_doc in full_docs.items():
+            vectorstore.docstore._dict[f"full_{full_doc_id}"] = full_doc
         
-        # Clear checkpoint on successful completion
-        if checkpoint_path.exists():
-            checkpoint_path.unlink()
-            print("Processing completed successfully, checkpoint cleared")
-                
+        print(f"Saving final vectorstore to {args.vectordb_dir}...")
+        vectorstore.save_local(args.vectordb_dir)
+        print("Done!")
     except Exception as e:
         print(f"Error processing mbox file: {e}")
         # Save progress on error
         if vectorstore is not None:
             print("Saving vector store state before exit...")
-            vectorstore.save_local(str(vectordb_dir))
+            vectorstore.save_local(args.vectordb_dir)
         raise
 
 if __name__ == '__main__':

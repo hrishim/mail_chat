@@ -21,6 +21,10 @@ def setup_debug_logging(debug_enabled: bool = False, debug_log_path: str = None)
     global args
     args.debugLog = debug_enabled
     
+    # Remove all existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
     if debug_enabled:
         logger.setLevel(logging.DEBUG)
         
@@ -41,6 +45,8 @@ def setup_debug_logging(debug_enabled: bool = False, debug_log_path: str = None)
     else:
         # Disable logging if debug not enabled
         logger.setLevel(logging.ERROR)
+        # Add NullHandler to prevent "No handlers found" warning
+        logger.addHandler(logging.NullHandler())
 
 def log_debug(message: str, *args) -> None:
     """Log a debug message.

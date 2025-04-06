@@ -2,12 +2,13 @@
 import os
 import time
 import numpy as np
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, NamedTuple, Tuple
 from langchain_core.documents import Document
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from utils import log_debug
 
 @dataclass
@@ -17,6 +18,15 @@ class SearchConfig:
     rerank_multiplier: int = 3
     rerank_method: str = "Cosine Similarity"
     return_full_threads: bool = True
+    max_total_tokens: int = 3000  # Default conservative limit for most LLMs
+    chunk_filter: Optional[dict] = None  # For filtering by chunk metadata
+
+class SearchResult(NamedTuple):
+    """Container for search results."""
+    documents: List[Document]  # Documents that fit within token limit
+    total_tokens: int          # Total tokens in returned documents
+    total_docs: int            # Total number of matching documents
+    split_docs: Dict[str, List[Document]] = {}  # Dictionary of document ID to list of split pieces
 
 class EmailSearcher:
     """A versatile email search engine that retrieves relevant email content from vector databases.
@@ -43,23 +53,35 @@ class EmailSearcher:
         - Reranking methods
         - Search strategies
     """
-    def __init__(self, debug_log: bool = False):
+    def __init__(self, debug_log: bool = False, log_file: str = None):
         """Initialize EmailSearcher with NVIDIA embeddings and FAISS vector store.
         
         Args:
             debug_log: Whether to enable debug logging for detailed search process information
+            log_file: Path to the log file for debug logging. Required if debug_log is True
             
         Raises:
             ValueError: If NGC_API_KEY environment variable is not set
+            ValueError: If debug_log is True but log_file is not provided
             
         Note:
             Currently uses NVIDIA's NV-Embed-QA model for embeddings and FAISS for vector storage.
-            The vector store path can be configured via the VECTOR_DB environment variable.
+            The vector store path is read from the VECTOR_DB environment variable.
         """
         self.debug_log = debug_log
+        if debug_log and not log_file:
+            raise ValueError("log_file must be provided when debug_log is True")
+            
+        if debug_log:
+            log_debug("Initializing EmailSearcher")
         
-        # Load environment variables
-        load_dotenv()
+        # Load environment variables from the project root directory
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        dotenv_path = os.path.join(project_root, '.env')
+        load_dotenv(dotenv_path)
+        
+        if self.debug_log:
+            log_debug(f"Loading environment variables from: {dotenv_path}")
         
         # Initialize embeddings
         ngc_key = os.getenv("NGC_API_KEY")
@@ -72,12 +94,43 @@ class EmailSearcher:
         )
         
         # Load vector store
+        raw_vector_db = os.environ.get("VECTOR_DB")
+        if self.debug_log:
+            log_debug(f"Raw VECTOR_DB value: {raw_vector_db!r}")
+            
         vectordb_path = os.getenv("VECTOR_DB", "./mail_vectordb")
+        if self.debug_log:
+            log_debug(f"Vector database path from .env: {vectordb_path!r}")
+            
+        # Try to fix path if it has quotes
+        if vectordb_path and vectordb_path.startswith('"') and vectordb_path.endswith('"'):
+            vectordb_path = vectordb_path[1:-1]
+            if self.debug_log:
+                log_debug(f"Removed quotes from path: {vectordb_path!r}")
+            
+        if not os.path.exists(vectordb_path):
+            raise ValueError(f"Vector store path '{vectordb_path}' does not exist")
+            
         self.vectorstore = FAISS.load_local(
             vectordb_path,
             self.embeddings,
             allow_dangerous_deserialization=True
         )
+
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate number of tokens in text using character count.
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Estimated token count (rough approximation)
+            
+        Note:
+            This is a conservative estimate. Actual token count may be lower.
+            Uses average of 4 characters per token as a rough approximation.
+        """
+        return len(text) // 4  # Conservative estimate of 4 chars per token
 
     def cosine_rerank(self, query: str, docs: List[Document], k: int) -> List[Document]:
         """Rerank documents using cosine similarity between query and document embeddings.
@@ -100,98 +153,175 @@ class EmailSearcher:
             to balance between quality and speed.
         """
         if self.debug_log:
-            log_debug("\nReranking with cosine similarity:")
-            log_debug(f"  Query: {query}")
-            log_debug(f"  Input documents: {len(docs)}")
-            log_debug(f"  Target documents: {k}")
+            log_debug(f"Reranking {len(docs)} documents using cosine similarity")
             start_time = time.perf_counter()
             
-        # Get embeddings
+        if not docs:
+            return []
+            
+        # Get embeddings for query and documents
         query_embedding = self.embeddings.embed_query(query)
-        doc_embeddings = [self.embeddings.embed_query(doc.page_content) for doc in docs]
         
-        # Calculate similarities
-        similarities = [
-            np.dot(query_embedding, doc_embedding) / 
-            (np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding))
-            for doc_embedding in doc_embeddings
-        ]
+        # Process documents in batches to avoid memory issues
+        doc_embeddings = []
+        batch_size = 10
+        for i in range(0, len(docs), batch_size):
+            batch = docs[i:i+batch_size]
+            batch_texts = [doc.page_content for doc in batch]
+            batch_embeddings = self.embeddings.embed_documents(batch_texts)
+            doc_embeddings.extend(batch_embeddings)
+            
+        # Calculate cosine similarity
+        similarities = []
+        for i, doc_embedding in enumerate(doc_embeddings):
+            similarity = np.dot(query_embedding, doc_embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
+            )
+            similarities.append((i, similarity))
+            
+        # Sort by similarity (highest first)
+        similarities.sort(key=lambda x: x[1], reverse=True)
         
-        # Sort by similarity
-        reranked_docs = [doc for _, doc in sorted(
-            zip(similarities, docs),
-            key=lambda x: x[0],
-            reverse=True
-        )][:k]
+        # Get top k documents
+        top_indices = [idx for idx, _ in similarities[:k]]
+        top_docs = [docs[idx] for idx in top_indices]
         
+        # Add similarity scores to metadata
+        for i, doc in enumerate(top_docs):
+            doc.metadata["similarity_score"] = float(similarities[i][1])
+            
         if self.debug_log:
             rerank_time = time.perf_counter() - start_time
-            log_debug("\nReranking results:")
             log_debug(f"  Reranking time: {rerank_time:.3f} seconds")
-            for i, (doc, sim) in enumerate(zip(reranked_docs, sorted(similarities, reverse=True)[:k])):
-                log_debug(f"\nDocument {i+1}:")
-                log_debug(f"  Similarity score: {sim:.4f}")
-                log_debug(f"  Word count: {len(doc.page_content.split())}")
-                log_debug(f"  Content preview: {doc.page_content[:200]}...")
-        
-        return reranked_docs
+            log_debug(f"  Top similarity scores: {[s for _, s in similarities[:3]]}")
+            
+        return top_docs
 
-    def get_full_thread(self, thread_id: str) -> Optional[Document]:
-        """Reconstruct a complete email thread from its constituent chunks.
-        
-        Email threads are stored as chunks in the vector store for better semantic search.
-        This method retrieves and reassembles all chunks belonging to a thread ID.
+    def get_full_thread(self, thread_id: str, message_index: int) -> Optional[Document]:
+        """Get full thread document by thread_id and message_index.
         
         Args:
             thread_id: Unique identifier for the email thread
+            message_index: Index of the message in the thread
             
         Returns:
-            Optional[Document]: A document containing the complete thread content if found,
-                              None if no chunks found for the thread_id
-            
-        Note:
-            The returned document includes metadata about the total number of chunks and
-            is marked with is_full_thread=True to distinguish it from chunk documents.
+            Optional[Document]: A document containing the complete thread if found,
+                          None if no document found for the thread_id and message_index
         """
         if self.debug_log:
-            log_debug(f"\nGetting full thread for ID: {thread_id}")
+            log_debug(f"Getting full thread for ID: {thread_id}, message index: {message_index}")
             start_time = time.perf_counter()
-            
-        # Get all chunks belonging to this thread
-        all_docs = []
-        for stored_doc in self.vectorstore.docstore._dict.values():
-            if stored_doc.metadata.get('thread_id') == thread_id:
-                all_docs.append(stored_doc)
         
-        if not all_docs:
-            if self.debug_log:
-                log_debug(f"  No documents found for thread ID: {thread_id}")
-            return None
-            
-        # Sort chunks by their position in the thread
-        all_docs.sort(key=lambda x: x.metadata.get('chunk_index', 0))
+        # Construct the full document ID
+        full_doc_id = f"full_{thread_id}_{message_index}"
         
-        # Combine all chunks to reconstruct the full thread
-        full_thread_content = "\n".join(d.page_content for d in all_docs)
-        
-        # Create a new document with the full thread content
-        thread_doc = Document(
-            page_content=full_thread_content,
-            metadata={
-                'thread_id': thread_id,
-                'total_chunks': len(all_docs),
-                'is_full_thread': True
-            }
-        )
+        # Retrieve the document directly from the docstore
+        thread_doc = self.vectorstore.docstore._dict.get(full_doc_id)
         
         if self.debug_log:
             thread_time = time.perf_counter() - start_time
-            log_debug(f"  Retrieved thread with {len(all_docs)} chunks")
+            if thread_doc:
+                log_debug(f"  Found thread document with {len(thread_doc.page_content)} characters")
+            else:
+                log_debug(f"  No thread document found for ID: {full_doc_id}")
             log_debug(f"  Thread retrieval time: {thread_time:.3f} seconds")
             
         return thread_doc
 
-    def semantic_search(self, query: str, config: SearchConfig = None) -> List[Document]:
+    def _process_docs_with_limit(
+        self, 
+        docs: List[Document], 
+        max_tokens: int,
+        num_docs: int = None
+    ) -> SearchResult:
+        """Process documents to fit within token limit.
+        
+        Args:
+            docs: List of documents to process
+            max_tokens: Maximum tokens allowed per document
+            num_docs: Maximum number of documents to return (including splits)
+            
+        Returns:
+            SearchResult containing documents (split if needed) and split document mapping
+        """
+        processed_docs = []
+        total_tokens = 0
+        split_docs_map = {}  # Dictionary to track split documents by ID
+        
+        for i, doc in enumerate(docs):
+            doc_tokens = self.estimate_tokens(doc.page_content)
+            doc_id = doc.metadata.get('full_content_id', f"doc_{i}")
+            
+            if doc_tokens > max_tokens:
+                # If a single document is too large, split it
+                splits = self._split_document(doc, max_tokens)
+                
+                # Store all splits in the split_docs_map
+                split_docs_map[doc_id] = splits
+                
+                # Add all splits to processed docs
+                processed_docs.extend(splits)
+                total_tokens += sum(self.estimate_tokens(split.page_content) for split in splits)
+            else:
+                # Document fits within limit, add it as is
+                processed_docs.append(doc)
+                total_tokens += doc_tokens
+                
+            # Check if we've hit the document limit
+            if num_docs and len(processed_docs) >= num_docs:
+                processed_docs = processed_docs[:num_docs]
+                break
+        
+        return SearchResult(
+            documents=processed_docs,
+            total_tokens=total_tokens,
+            total_docs=len(docs),
+            split_docs=split_docs_map
+        )
+
+    def _split_document(self, doc: Document, max_tokens: int) -> List[Document]:
+        """Split a document into smaller parts that fit within token limit.
+        
+        Args:
+            doc: Document to split
+            max_tokens: Maximum tokens per split
+            
+        Returns:
+            List of split documents with updated metadata
+        """
+        # Use the same text splitter settings as in data_prep
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=max_tokens * 4,  # Convert tokens to approximate chars
+            chunk_overlap=40,
+            length_function=len,
+            is_separator_regex=False
+        )
+        
+        splits = text_splitter.split_text(doc.page_content)
+        split_docs = []
+        
+        for i, split in enumerate(splits):
+            # Create new metadata for the split
+            split_metadata = doc.metadata.copy()
+            split_metadata.update({
+                'is_split': True,
+                'split_index': i,
+                'total_splits': len(splits),
+                'original_content_id': doc.metadata.get('full_content_id', '')
+            })
+            
+            # Preserve similarity score if it exists
+            if 'similarity_score' in doc.metadata:
+                split_metadata['similarity_score'] = doc.metadata['similarity_score']
+            
+            split_docs.append(Document(
+                page_content=split,
+                metadata=split_metadata
+            ))
+        
+        return split_docs
+
+    def semantic_search(self, query: str, config: SearchConfig = None) -> SearchResult:
         """Search for relevant email content using semantic similarity.
         
         This is the main search method that orchestrates the complete search process:
@@ -205,7 +335,7 @@ class EmailSearcher:
                    See SearchConfig class for available parameters
             
         Returns:
-            List[Document]: Relevant documents, either as chunks or full threads based on config
+            SearchResult: Container with relevant documents and pagination info
             
         Note:
             The search process is highly configurable through SearchConfig:
@@ -213,22 +343,40 @@ class EmailSearcher:
             - rerank_multiplier: Controls the quality vs speed tradeoff for reranking
             - rerank_method: Whether to apply cosine similarity reranking
             - return_full_threads: Whether to return complete email threads
+            - max_total_tokens: Maximum total tokens to return
         """
         if config is None:
             config = SearchConfig()
-            
         if self.debug_log:
-            log_debug(f"\nSemantic searching for: {query}")
-            log_debug(f"  Config: num_docs={config.num_docs}, rerank={config.rerank_method}, full_threads={config.return_full_threads}")
+            log_debug(f"Semantic searching for: {query}")
+            log_debug(f"  Config: num_docs={config.num_docs}, rerank={config.rerank_method}, "
+                     f"full_threads={config.return_full_threads}, "
+                     f"max_tokens={config.max_total_tokens}")
             start_time = time.perf_counter()
         
         # Get initial matching chunks
         initial_k = config.num_docs if config.rerank_method == "No Reranking" else config.num_docs * config.rerank_multiplier
-        initial_docs = self.vectorstore.similarity_search(query, k=initial_k)
+        if self.debug_log:
+            log_debug(f"  Retrieving {initial_k} initial documents")
+            
+        try:
+            initial_docs = self.vectorstore.similarity_search(query, k=initial_k)
+            if self.debug_log:
+                log_debug(f"  Successfully retrieved {len(initial_docs)} documents")
+        except Exception as e:
+            if self.debug_log:
+                log_debug(f"  Error during similarity search: {str(e)}")
+            raise
+        
+        # Filter for chunk documents only
+        if self.debug_log:
+            log_debug(f"  Filtering for chunk documents")
+            
+        initial_docs = [doc for doc in initial_docs if doc.metadata.get('is_chunk', False)]
         
         if self.debug_log:
             retrieval_time = time.perf_counter() - start_time
-            log_debug(f"  Retrieved {len(initial_docs)} initial documents")
+            log_debug(f"  Retrieved {len(initial_docs)} initial chunk documents")
             log_debug(f"  Initial retrieval time: {retrieval_time:.3f} seconds")
             if config.rerank_method == "No Reranking":
                 log_debug("  Skipping reranking")
@@ -236,34 +384,84 @@ class EmailSearcher:
         # Rerank chunks if selected
         if config.rerank_method != "No Reranking":
             initial_docs = self.cosine_rerank(query, initial_docs, config.num_docs)
+        if self.debug_log:
+            log_debug(f"  Successfully reranked {len(initial_docs)} documents")
         
         # Return chunks if full threads not requested
         if not config.return_full_threads:
-            return initial_docs
+            return self._process_docs_with_limit(initial_docs, config.max_total_tokens, config.num_docs)
         
         # Get complete threads for matched chunks
         if self.debug_log:
-            log_debug("\nGetting full threads for matched chunks:")
+            log_debug("Getting full threads for matched chunks:")
             thread_start_time = time.perf_counter()
-            
+        
         thread_docs = []
-        seen_threads = set()
+        seen_content_ids = set()
         
         for doc in initial_docs:
-            thread_id = doc.metadata.get('thread_id')
-            if not thread_id or thread_id in seen_threads:
+            full_content_id = doc.metadata.get('full_content_id')
+            if not full_content_id:
+                if self.debug_log:
+                    log_debug(f"  Skipping chunk without full_content_id: {doc.metadata}")
                 continue
-                
-            seen_threads.add(thread_id)
-            thread_doc = self.get_full_thread(thread_id)
-            if thread_doc:
-                thread_docs.append(thread_doc)
+        
+            if full_content_id in seen_content_ids:
+                if self.debug_log:
+                    log_debug(f"  Skipping duplicate thread: {full_content_id}")
+                continue
+            
+            seen_content_ids.add(full_content_id)
+            if self.debug_log:
+                log_debug(f"  Processing new thread: {full_content_id}")
+        
+            try:
+                thread_id, message_index = full_content_id.split('_')
+                thread_doc = self.get_full_thread(thread_id, int(message_index))
+                if thread_doc:
+                    # Copy similarity score from chunk to full thread
+                    if 'similarity_score' in doc.metadata:
+                        thread_doc.metadata['similarity_score'] = doc.metadata['similarity_score']
+                    thread_docs.append(thread_doc)
+                    if self.debug_log:
+                        log_debug(f"    Added thread with {len(thread_doc.page_content)} chars")
+                else:
+                    if self.debug_log:
+                        log_debug(f"    No thread document found for {full_content_id}")
+            except ValueError:
+                if self.debug_log:
+                    log_debug(f"  Invalid full_content_id format: {full_content_id}")
+                continue
+        
+        # Process thread documents with token limit
+        if self.debug_log:
+            log_debug("Processing thread documents:")
+            log_debug(f"  Number of threads to process: {len(thread_docs)}")
+            log_debug(f"  Max total tokens: {config.max_total_tokens}")
+            
+        result = self._process_docs_with_limit(thread_docs, config.max_total_tokens, config.num_docs)
         
         if self.debug_log:
             thread_time = time.perf_counter() - thread_start_time
             total_time = time.perf_counter() - start_time
-            log_debug(f"  Retrieved {len(thread_docs)} full threads")
+            log_debug(f"  Retrieved {len(result.documents)} of {result.total_docs} full threads")
+            log_debug(f"  Total tokens: {result.total_tokens}")
+            log_debug(f"  Total split documents: {sum(len(splits) for splits in result.split_docs.values())}")
             log_debug(f"  Thread retrieval time: {thread_time:.3f} seconds")
             log_debug(f"  Total search time: {total_time:.3f} seconds")
+            
+            # Log full emails after reranking
+            log_debug("\nFull emails after reranking:")
+            for i, doc in enumerate(result.documents, 1):
+                log_debug("--- Email %d start ---", i)
+                log_debug("Thread ID: %s", doc.metadata.get('thread_id'))
+                log_debug("Content:\n%s", doc.page_content)
+                log_debug("--- Email %d end ---\n", i)
+            
+            # Log split documents
+            if result.split_docs:
+                log_debug("\nSplit documents:")
+                for doc_id, splits in result.split_docs.items():
+                    log_debug(f"Document {doc_id} split into {len(splits)} parts")
         
-        return thread_docs
+        return result
