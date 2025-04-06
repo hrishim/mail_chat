@@ -128,6 +128,7 @@ Self-Query:
 https://python.langchain.com/docs/how_to/self_query/
 https://github.com/langchain-ai/langchain/blob/master/cookbook/self_query_hotel_search.ipynb
 
+Self Query: https://python.langchain.com/docs/how_to/self_query/
 
 -----------------------
 
