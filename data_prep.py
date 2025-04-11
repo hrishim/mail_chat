@@ -333,8 +333,8 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
         except ValueError:
             continue
             
-    # If we get here, none of our formats worked
-    print(f"WARNING: Failed to parse date string: '{date_str}'")
+    # Log the error and return None
+    print(f"WARNING: Failed to parse date string in parse_date_for_sorting: '{date_str}'")
     log_date_error(date_str)
     return None
 
@@ -824,12 +824,11 @@ def main():
                     documents.append(doc.page_content)
                 
                 # Add to collection without attempting to embed
-                chunks_store._client.add(
-                    collection_name="email_collection",
-                    embeddings=None,  # Skip embedding
+                chunks_store._collection.add(
                     documents=documents,
                     metadatas=metadatas,
-                    ids=ids
+                    ids=ids,
+                    embeddings=[[0.0] * 384] * len(documents)  # Use zero embeddings for full docs
                 )
             
             # Save final state
