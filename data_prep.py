@@ -21,12 +21,14 @@ from langchain_community.vectorstores.utils import filter_complex_metadata
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
 
+from date_utils import TZ_MAP, DATE_FORMATS
+
 # Load environment variables from .env file
 load_dotenv()
 
 # Initialize text splitter with conservative settings for embedding
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=400,  # ~100 tokens
+    chunk_size=400,  # Reduced to stay under 512 token limit
     chunk_overlap=40,  # 10% overlap
     length_function=len,
     is_separator_regex=False
@@ -219,17 +221,7 @@ def parse_email_date(date_str: str) -> str:
             date_str = parts[0] + '+' + parts[1]
     
     # Map common timezone names to their UTC offsets
-    tz_map = {
-        'EDT': '-0400',  # Eastern Daylight Time
-        'EST': '-0500',  # Eastern Standard Time
-        'CDT': '-0500',  # Central Daylight Time
-        'CST': '-0600',  # Central Standard Time
-        'MDT': '-0600',  # Mountain Daylight Time
-        'MST': '-0700',  # Mountain Standard Time
-        'PDT': '-0700',  # Pacific Daylight Time
-        'PST': '-0800',  # Pacific Standard Time
-        'IST': '+0530',  # Indian Standard Time
-    }
+    tz_map = TZ_MAP
     
     # Replace timezone names with their offsets
     for tz_name, offset in tz_map.items():
@@ -248,40 +240,7 @@ def parse_email_date(date_str: str) -> str:
         date_str = re.sub(r'[+-]\d{2}:?\d{2}$', f'{sign}{hours}{mins}', date_str)
     
     # List of date formats to try
-    formats = [
-        # RFC 2822 and common variants
-        '%a, %d %b %Y %H:%M:%S %z',  # Standard email format
-        '%d %b %Y %H:%M:%S %z',      # Without weekday
-        '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
-        '%a, %d %b %Y %H:%M:%S',     # Without timezone
-        '%a, %d %b %Y %H:%M %z',     # Without seconds
-        '%d %b %Y %H:%M %z',         # Without seconds and weekday
-        
-        # Unix style formats
-        '%a %b %d %H:%M:%S %Y %z',   # With timezone
-        '%a %b %d %H:%M:%S %Y',      # Without timezone
-        '%a %b %d %H:%M:%S %z %Y',   # Timezone before year
-        
-        # Short year formats
-        '%d %b %y %H:%M:%S',         # Basic short year
-        '%d %b %y %H:%M %z',         # Short year with timezone
-        '%a, %d %b %y %H:%M:%S %z',  # Full format with short year
-        '%a, %d %b %y %H:%M:%S',     # Without timezone
-        
-        # ISO formats
-        '%Y-%m-%d %H:%M:%S%z',       # With timezone
-        '%Y-%m-%d %H:%M:%S',         # Without timezone
-        
-        # Extra space variations
-        '%a,  %d %b %Y %H:%M:%S %z',  # Double space after comma
-        '%a,  %d %b %y %H:%M:%S %z',  # Double space with short year
-        '%a,  %d %b %Y %H:%M:%S',     # Double space without timezone
-        '%a,  %d %b %y %H:%M:%S',     # Double space, short year, no timezone
-        
-        # Special formats
-        '%a %b %d %H:%M:%S GMT%z %Y',  # GMT with offset
-        '%a %b %d %H:%M:%S %z %Y',     # Offset before year
-    ]
+    formats = DATE_FORMATS
     
     # Try each format
     for fmt in formats:
@@ -343,120 +302,39 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
     date_str = re.sub(r'\s+', ' ', date_str)  # Normalize spaces
     date_str = date_str.strip()
 
-    # Handle Unix-style timestamps with timezone but no space
-    # e.g., "Thu Apr 16 20:59:04 2015+0530" -> "Thu Apr 16 20:59:04 2015 +0530"
-    unix_tz_match = re.search(r'(\d{4})[+-]\d{4}$', date_str)
-    if unix_tz_match:
-        year_pos = date_str.find(unix_tz_match.group(1))
-        if year_pos != -1:
-            year_end = year_pos + 4
-            date_str = date_str[:year_end] + ' ' + date_str[year_end:]
-
-    # Map common timezone names to their UTC offsets
-    tz_map = {
-        'EDT': '-0400',  # Eastern Daylight Time
-        'EST': '-0500',  # Eastern Standard Time
-        'CDT': '-0500',  # Central Daylight Time
-        'CST': '-0600',  # Central Standard Time
-        'MDT': '-0600',  # Mountain Daylight Time
-        'MST': '-0700',  # Mountain Standard Time
-        'PDT': '-0700',  # Pacific Daylight Time
-        'PST': '-0800',  # Pacific Standard Time
-        'IST': '+0530',  # Indian Standard Time
-        'GMT': '+0000',  # Greenwich Mean Time
-        'UT': '+0000',   # Universal Time
-    }
-    
     # Replace timezone names with their offsets
-    for tz_name, offset in tz_map.items():
+    for tz_name, offset in TZ_MAP.items():
         if f" {tz_name}" in date_str:
             date_str = date_str.replace(f" {tz_name}", f" {offset}")
             break
 
-    # Handle special case: "Fri May 31 15:00:09 IST 2013" -> "Fri May 31 15:00:09 2013 +0530"
-    tz_year_match = re.search(r'(\d{2}:\d{2}:\d{2})\s+([A-Z]{2,4})\s+(\d{4})', date_str)
-    if tz_year_match:
-        time_str, tz_name, year = tz_year_match.groups()
-        if tz_name in tz_map:
-            date_str = date_str.replace(f"{time_str} {tz_name} {year}", f"{time_str} {year} {tz_map[tz_name]}")
-
-    # Handle special case: "Thu Nov 07 18:30:38 GMT+05:30 2013" -> "Thu Nov 07 18:30:38 2013 +0530"
-    gmt_offset_match = re.search(r'GMT([+-]\d{2}):(\d{2})\s+(\d{4})', date_str)
-    if gmt_offset_match:
-        hour, minute, year = gmt_offset_match.groups()
-        date_str = re.sub(r'GMT([+-]\d{2}):(\d{2})\s+(\d{4})', rf'\3 \1\2', date_str)
-
-    # Handle special case: "Sat Jun 08 12:44:28 GMT+05:30 2013" -> "Sat Jun 08 12:44:28 2013 +0530"
-    gmt_offset_no_space = re.search(r'(\d{2}:\d{2}:\d{2})\s*GMT([+-]\d{2}):(\d{2})\s+(\d{4})', date_str)
-    if gmt_offset_no_space:
-        time_str, hour, minute, year = gmt_offset_no_space.groups()
-        date_str = re.sub(r'(\d{2}:\d{2}:\d{2})\s*GMT([+-]\d{2}):(\d{2})\s+(\d{4})', rf'\1 \4 \2\3', date_str)
-
-    # Handle special case: "Fri May 31 15:00:09 +0530 2013" -> "Fri May 31 15:00:09 2013 +0530"
-    tz_before_year = re.search(r'(\d{2}:\d{2}:\d{2})\s+([+-]\d{4})\s+(\d{4})', date_str)
-    if tz_before_year:
-        time_str, tz, year = tz_before_year.groups()
-        date_str = date_str.replace(f"{time_str} {tz} {year}", f"{time_str} {year} {tz}")
-
-    # Handle weekday with comma and extra spaces: "Monday,  2 Aug 2004" -> "Mon, 2 Aug 2004"
-    weekdays = {
-        'Monday': 'Mon',
-        'Tuesday': 'Tue',
-        'Wednesday': 'Wed',
-        'Thursday': 'Thu',
-        'Friday': 'Fri',
-        'Saturday': 'Sat',
-        'Sunday': 'Sun'
-    }
-    for full, abbr in weekdays.items():
-        if date_str.startswith(full):
-            date_str = date_str.replace(full, abbr, 1)
-            break
-
-    # Try our standard format first
-    try:
-        return datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S%z')
-    except ValueError:
-        pass
-
-    # If that fails, try email formats
-    formats = [
-        '%a, %d %b %Y %H:%M:%S %z',  # Standard email format: 'Sun, 09 Feb 2025 09:37:31 -0800'
-        '%d %b %Y %H:%M:%S %z',      # Without weekday
-        '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
-        '%a, %d %b %Y %H:%M:%S',     # Without timezone
-        '%a %b %d %H:%M:%S %Y %z',   # Unix style with timezone: 'Fri Apr 17 00:16:47 2015 +0530'
-        '%a %b %d %H:%M:%S %Y',      # Unix style: 'Thu Mar 19 14:16:11 2025'
-        '%a, %d %b %Y %H:%M %z',     # Without seconds
-        '%d %b %Y %H:%M %z',         # Without seconds and weekday
-        '%d %b %y %H:%M:%S',         # Short year format: '06 Apr 15 21:57:41'
-        '%d %b %Y %H:%M:%S',         # Same but with full year
-        '%d %b %y %H:%M %z',         # Short year with timezone: '30 Jun 13 07:26 -0800'
-        '%a, %d %b %Y %H:%M:%S',     # Without timezone
-        '%a, %d %b %y %H:%M:%S %z',  # Short year with timezone
-        '%a, %d %b %y %H:%M:%S',     # Short year without timezone
-        '%a, %d %b %Y %H:%M',        # Without seconds or timezone
-        '%a %b %d %H:%M:%S %z %Y',   # Unix style with timezone before year
-        '%d %b %y %H:%M:%S %z',      # Short year with timezone: '26 Nov 09 20:29:04 -0830'
-        '%a, %-d %b %Y %H:%M:%S',    # Single digit day: 'Sat, 4 Oct 2008 09:52:43'
-        '%d %b %Y',                  # Just date: '13 Apr 2006'
-        '%A, %d %b %Y %H:%M:%S %z',  # Full weekday with timezone
-        '%A, %-d %b %Y %H:%M:%S %z', # Full weekday, single digit day with timezone
-    ]
-
-    for fmt in formats:
+    # Handle non-standard timezone offsets
+    if (match := re.search(r'([+-])(\d{2}):?(\d{2})$', date_str)):
+        sign, hours, mins = match.groups()
+        if int(mins) > 30:
+            hours = str(int(hours) + 1).zfill(2)
+            mins = "00"
+        else:
+            mins = "30"
+        date_str = re.sub(r'[+-]\d{2}:?\d{2}$', f'{sign}{hours}{mins}', date_str)
+    
+    # Try each format
+    for fmt in DATE_FORMATS:
         try:
+            # Parse with current format
             dt = datetime.strptime(date_str, fmt)
+            
+            # If timezone is naive, assume UTC
             if dt.tzinfo is None:
-                # If no timezone, assume UTC
-                from datetime import timezone
                 dt = dt.replace(tzinfo=timezone.utc)
+            
             return dt
+            
         except ValueError:
             continue
-
-    # Log the error and return None
-    print(f"WARNING: Failed to parse date string in parse_date_for_sorting: '{date_str}'")
+            
+    # If we get here, none of our formats worked
+    print(f"WARNING: Failed to parse date string: '{date_str}'")
     log_date_error(date_str)
     return None
 
@@ -594,24 +472,30 @@ def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
     
     return org_msgs
 
-def get_thread_batches(mbox_file: str) -> Generator[list[list[Message]], None, None]:
+def get_thread_batches(mbox_file: str, max_emails: Optional[int] = None) -> Generator[list[list[Message]], None, None]:
     """Get batches of threads from mbox file."""
     current_batch = {}  # thread_id -> list[Message]
+    email_count = 0
     
     try:
         mbox = mailbox.mbox(mbox_file)
         for idx, message in enumerate(mbox):
+            if max_emails and email_count >= max_emails:
+                print(f"Reached max emails limit ({max_emails})")
+                break
+                
             try:
                 msg = Message.from_email_message(message)
                 if msg is None:
                     continue
                 
+                email_count += 1
                 thread_id = msg.x_gm_thrid
                 if thread_id not in current_batch:
                     current_batch[thread_id] = []
                 current_batch[thread_id].append(msg)
                 
-                # Yield when we have accumulated enough threads
+                # Yield batch when it gets large enough
                 if len(current_batch) >= 100:  # Process 100 threads at a time
                     thread_batch = []
                     for thread_messages in current_batch.values():
@@ -635,13 +519,9 @@ def get_thread_batches(mbox_file: str) -> Generator[list[list[Message]], None, N
                 thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date) or datetime.min.replace(tzinfo=timezone.utc))
                 thread_batch.append(thread_messages)
             yield thread_batch
-    
+
     except Exception as e:
         print(f"Error processing mbox file: {e}")
-        # Save progress on error
-        if vectorstore is not None:
-            print("Saving vector store state before exit...")
-            vectorstore.save_local(args.vectordb_dir)
         raise
 
 def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_batch: int = 500, start_idx: int = 0) -> Generator[list[list[Message]], None, None]:
@@ -792,6 +672,8 @@ def parse_args():
                       help='Directory to store vector database')
     parser.add_argument('--db-type', choices=['faiss', 'chroma'], default='faiss',
                       help='Type of vector database to use (faiss or chroma)')
+    parser.add_argument('--max-emails', type=int, default=None,
+                      help='Maximum number of emails to process (default: all)')
     return parser.parse_args()
 
 def create_vectorstore(db_type: Literal['faiss', 'chroma'], 
@@ -814,21 +696,15 @@ def create_vectorstore(db_type: Literal['faiss', 'chroma'],
         store = FAISS.from_documents(documents, embeddings)
         return store, None
     else:  # chroma
-        # Create chunks collection
+        # Create Chroma collection for chunks (similar to FAISS approach)
+        print("Creating email collection...")
         chunks_store = Chroma.from_documents(
-            documents,
+            [create_chroma_document(doc) for doc in documents],
             embeddings,
             persist_directory=persist_dir,
-            collection_name="email_chunks"
+            collection_name="email_collection"
         )
-        
-        # Create full emails collection (no embeddings needed)
-        full_docs_store = Chroma(
-            persist_directory=persist_dir,
-            embedding_function=embeddings,  # Required but won't be used
-            collection_name="full_emails"
-        )
-        return chunks_store, full_docs_store
+        return chunks_store, None
 
 def add_documents_to_vectorstore(chunks_store: VectorStore,
                                full_docs_store: Optional[VectorStore],
@@ -848,10 +724,8 @@ def add_documents_to_vectorstore(chunks_store: VectorStore,
         chunks_store.add_documents(documents)
         chunks_store.save_local(persist_dir)
     else:  # chroma
-        chunks_store.add_documents(documents)
+        chunks_store.add_documents([create_chroma_document(doc) for doc in documents])
         chunks_store.persist()
-        if full_docs_store:
-            full_docs_store.persist()
 
 def main():
     """Main entry point."""
@@ -863,7 +737,7 @@ def main():
     print(f"Processing mbox file using {args.db_type} database...")
     try:
         # Process messages sequentially
-        for thread_batch in get_thread_batches(args.mbox_file):
+        for thread_batch in get_thread_batches(args.mbox_file, args.max_emails):
             # Process each batch
             documents = process_thread_batch(thread_batch)
             all_documents.extend(documents)  # Accumulate all documents
@@ -915,13 +789,13 @@ def main():
             vectorstore.save_local(args.vectordb_dir)
             
         else:  # chroma
-            # Create Chroma collections
-            print("Creating email_chunks collection...")
+            # Create Chroma collection for chunks (similar to FAISS approach)
+            print("Creating email collection...")
             chunks_store = Chroma.from_documents(
                 [create_chroma_document(doc) for doc in chunks[:batch_size]],  # First batch
                 embeddings,
                 persist_directory=args.vectordb_dir,
-                collection_name="email_chunks"
+                collection_name="email_collection"
             )
             
             # Add remaining chunks in batches
@@ -929,22 +803,37 @@ def main():
                 batch = [create_chroma_document(doc) for doc in chunks[i:i+batch_size]]
                 print(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1} ({len(batch)} chunks)...")
                 chunks_store.add_documents(batch)
-                chunks_store.persist()
             
-            # Create and populate full_emails collection
-            print(f"Creating full_emails collection with {len(full_docs)} documents...")
-            full_docs_list = [create_chroma_document(doc) for doc in full_docs.values()]
-            full_docs_store = Chroma.from_documents(
-                full_docs_list,
-                embeddings,
-                persist_directory=args.vectordb_dir,
-                collection_name="full_emails"
-            )
+            # Add full documents with special IDs (without embedding)
+            print(f"Adding {len(full_docs)} full documents (without embeddings)...")
             
-            # Persist both collections
-            print(f"Saving final Chroma collections to {args.vectordb_dir}...")
-            chunks_store.persist()
-            full_docs_store.persist()
+            # Process full documents in batches
+            full_docs_list = list(full_docs.items())
+            for i in range(0, len(full_docs_list), batch_size):
+                batch_items = full_docs_list[i:i+batch_size]
+                print(f"Processing full docs batch {i//batch_size + 1} of {(len(full_docs_list)-1)//batch_size + 1}...")
+                
+                # Add full documents directly to collection without embedding
+                ids = []
+                metadatas = []
+                documents = []
+                for full_doc_id, full_doc in batch_items:
+                    doc = create_chroma_document(full_doc)
+                    ids.append(f"full_{full_doc_id}")
+                    metadatas.append(doc.metadata)
+                    documents.append(doc.page_content)
+                
+                # Add to collection without attempting to embed
+                chunks_store._client.add(
+                    collection_name="email_collection",
+                    embeddings=None,  # Skip embedding
+                    documents=documents,
+                    metadatas=metadatas,
+                    ids=ids
+                )
+            
+            # Save final state
+            print(f"Saving final Chroma collection to {args.vectordb_dir}...")
             
             # For error handling
             vectorstore = chunks_store
@@ -960,8 +849,6 @@ def main():
                 vectorstore.save_local(args.vectordb_dir)
             else:  # chroma
                 vectorstore.persist()
-                if 'full_docs_store' in locals() and full_docs_store:
-                    full_docs_store.persist()
         raise
 
 if __name__ == '__main__':
