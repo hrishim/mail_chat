@@ -220,21 +220,8 @@ def parse_email_date(date_str: str) -> str:
         if len(parts) == 2:
             date_str = parts[0] + '+' + parts[1]
     
-    # Map common timezone names to their UTC offsets
-    tz_map = {
-        'EDT': '-0400',  # Eastern Daylight Time
-        'EST': '-0500',  # Eastern Standard Time
-        'CDT': '-0500',  # Central Daylight Time
-        'CST': '-0600',  # Central Standard Time
-        'MDT': '-0600',  # Mountain Daylight Time
-        'MST': '-0700',  # Mountain Standard Time
-        'PDT': '-0700',  # Pacific Daylight Time
-        'PST': '-0800',  # Pacific Standard Time
-        'IST': '+0530',  # Indian Standard Time
-    }
-    
     # Replace timezone names with their offsets
-    for tz_name, offset in tz_map.items():
+    for tz_name, offset in TZ_MAP.items():
         if f" {tz_name}" in date_str:
             date_str = date_str.replace(f" {tz_name}", f" {offset}")
             break
