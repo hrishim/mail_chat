@@ -755,7 +755,7 @@ def main():
         
         print(f"Creating {args.db_type} vectorstore with {len(chunks)} chunks...")
         embeddings = NVIDIAEmbeddings(
-            model="NV-Embed-QA",
+            model="NV-Embed-QA",  # Suitable for both retrieval and summarization
             api_key=os.getenv("NGC_API_KEY")
         )
         
