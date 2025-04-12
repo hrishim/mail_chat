@@ -21,7 +21,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 import chromadb
 from db_utils import EmailStore
-from date_utils import TZ_MAP, DATE_FORMATS
+from date_utils import TZ_MAP, DATE_FORMATS, parse_date_for_sorting
 
 # Load environment variables from .env file
 load_dotenv()
@@ -112,7 +112,7 @@ class Message:
                 date = "1970-01-01 00:00:00+0000"
             else:
                 try:
-                    date = parse_email_date(date_str)
+                    date = parse_date_for_sorting(date_str)
                 except ValueError:
                     print("Warning: Could not parse date, using default date")
                     date = "1970-01-01 00:00:00+0000"
@@ -180,193 +180,38 @@ def clean_content(content: Optional[str]) -> str:
         return content.strip()
     return ""
 
-@lru_cache(maxsize=10000)
-def parse_email_date(date_str: str) -> str:
-    """Parse email date string into a consistent format.
-    
-    Handles various email date formats and converts to our standard format.
-    
-    Args:
-        date_str: Date string from email header
-        
-    Returns:
-        Date string in format 'YYYY-MM-DD HH:MM:SS±HHMM'
-    """
-    if not date_str:
-        raise ValueError("Empty date string")
-    
-    # Try to handle common variations
-    date_str = date_str.strip()
-    
-    # Clean up parenthetical timezone names
-    date_str = re.sub(r'\s*\([^)]+\)\s*$', '', date_str)
-    
-    # Handle Unix-style timestamps with timezone but no space
-    # e.g., "Thu Apr 16 20:59:04 2015+0530" -> "Thu Apr 16 20:59:04 2015 +0530"
-    unix_tz_match = re.search(r'(\d{4})[+-]\d{4}$', date_str)
-    if unix_tz_match:
-        year_pos = date_str.find(unix_tz_match.group(1))
-        if year_pos != -1:
-            year_end = year_pos + 4
-            date_str = date_str[:year_end] + ' ' + date_str[year_end:]
-    
-    # Handle UT timezone
-    if ' UT' in date_str:
-        date_str = date_str.replace(' UT', ' +0000')
-    
-    # Handle GMT+HHMM format
-    if 'GMT+' in date_str:
-        parts = date_str.split('GMT+')
-        if len(parts) == 2:
-            date_str = parts[0] + '+' + parts[1]
-    
-    # Replace timezone names with their offsets
-    for tz_name, offset in TZ_MAP.items():
-        if f" {tz_name}" in date_str:
-            date_str = date_str.replace(f" {tz_name}", f" {offset}")
-            break
-    
-    # Handle non-standard timezone offsets
-    if (match := re.search(r'([+-])(\d{2}):?(\d{2})$', date_str)):
-        sign, hours, mins = match.groups()
-        if int(mins) > 30:
-            hours = str(int(hours) + 1).zfill(2)
-            mins = "00"
-        else:
-            mins = "30"
-        date_str = re.sub(r'[+-]\d{2}:?\d{2}$', f'{sign}{hours}{mins}', date_str)
-    
-    # List of date formats to try
-    formats = [
-        # RFC 2822 and common variants
-        '%a, %d %b %Y %H:%M:%S %z',  # Standard email format
-        '%d %b %Y %H:%M:%S %z',      # Without weekday
-        '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
-        '%a, %d %b %Y %H:%M:%S',     # Without timezone
-        '%a, %d %b %Y %H:%M %z',     # Without seconds
-        '%d %b %Y %H:%M %z',         # Without seconds and weekday
-        
-        # Unix style formats
-        '%a %b %d %H:%M:%S %Y %z',   # With timezone
-        '%a %b %d %H:%M:%S %Y',      # Without timezone
-        '%a %b %d %H:%M:%S %z %Y',   # Timezone before year
-        
-        # Short year formats
-        '%d %b %y %H:%M:%S',         # Basic short year
-        '%d %b %y %H:%M %z',         # Short year with timezone
-        '%a, %d %b %y %H:%M:%S %z',  # Full format with short year
-        '%a, %d %b %y %H:%M:%S',     # Without timezone
-        
-        # ISO formats
-        '%Y-%m-%d %H:%M:%S%z',       # With timezone
-        '%Y-%m-%d %H:%M:%S',         # Without timezone
-        
-        # Extra space variations
-        '%a,  %d %b %Y %H:%M:%S %z',  # Double space after comma
-        '%a,  %d %b %y %H:%M:%S %z',  # Double space with short year
-        '%a,  %d %b %Y %H:%M:%S',     # Double space without timezone
-        '%a,  %d %b %y %H:%M:%S',     # Double space, short year, no timezone
-        
-        # Special formats
-        '%a %b %d %H:%M:%S GMT%z %Y',  # GMT with offset
-        '%a %b %d %H:%M:%S %z %Y',     # Offset before year
-    ]
-    
-    # Try each format
-    for fmt in formats:
-        try:
-            # Parse with current format
-            dt = datetime.strptime(date_str, fmt)
-            
-            # If timezone is naive, assume UTC
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            
-            # Convert to our standard format
-            return dt.strftime('%Y-%m-%d %H:%M:%S%z')
-            
-        except ValueError:
-            continue
-            
-    # If we get here, none of our formats worked
-    raise ValueError(f"Failed to parse date string: '{date_str}'")
-
 def log_date_error(date_str: str, error_type: str = "Failed to parse") -> None:
     """Log date parsing errors to file with absolute path."""
     try:
-        error_log_path = Path(__file__).parent / 'date_fmt_error.txt'
-        with open(error_log_path, 'a', encoding='utf-8') as f:
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            f.write(f"[{timestamp}] {error_type}: '{date_str}'\n")
-            f.write(f"  Tried formats:\n")
-            for fmt in [
-                '%Y-%m-%d %H:%M:%S%z',  # Our standard format
-                '%a, %d %b %Y %H:%M:%S %z',
-                '%d %b %Y %H:%M:%S %z',
-                '%a, %d %b %Y %H:%M:%S %Z',
-                '%a, %d %b %Y %H:%M:%S',
-                '%a %b %d %H:%M:%S %Y %z',
-                '%a %b %d %H:%M:%S %Y',
-                '%a, %d %b %Y %H:%M %z',
-                '%d %b %Y %H:%M %z',
-                '%d %b %y %H:%M:%S',
-                '%d %b %Y %H:%M:%S',
-                '%d %b %y %H:%M %z',
-            ]:
-                f.write(f"    - {fmt}\n")
-            f.write("\n")
-            f.flush()  # Force write to disk
+        # Create a log file in the current directory
+        log_file = Path('date_fmt_error.txt').absolute()
+        
+        with open(log_file, 'a') as f:
+            # Write the error and the date string
+            f.write(f"{error_type}: '{date_str}'\n")
+            
+            # Try to parse with each format and log the error
+            for fmt in DATE_FORMATS:
+                try:
+                    datetime.strptime(date_str, fmt)
+                    f.write(f"  Format {fmt} works!\n")
+                    break
+                except ValueError as e:
+                    f.write(f"  Format {fmt}: {str(e)}\n")
+            
+            f.write("\n")  # Add a blank line between entries
     except Exception as e:
-        print(f"Error writing to date_fmt_error.txt: {e}")
+        print(f"Error logging date error: {e}")
 
-@lru_cache(maxsize=10000)
-def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
-    """Parse date string into datetime object for sorting. Returns None if parsing fails."""
-    if not date_str:
-        print("WARNING: Empty date string in parse_date_for_sorting")
-        log_date_error(date_str, "Empty date string")
-        return None
-
-    # Clean up parenthetical timezone names and extra spaces
-    date_str = re.sub(r'\s*\([^)]+\)\s*$', '', date_str)  # Remove (IST) etc.
-    date_str = re.sub(r'\s+', ' ', date_str)  # Normalize spaces
-    date_str = date_str.strip()
-
-    # Replace timezone names with their offsets
-    for tz_name, offset in TZ_MAP.items():
-        if f" {tz_name}" in date_str:
-            date_str = date_str.replace(f" {tz_name}", f" {offset}")
-            break
-
-    # Handle non-standard timezone offsets
-    if (match := re.search(r'([+-])(\d{2}):?(\d{2})$', date_str)):
-        sign, hours, mins = match.groups()
-        if int(mins) > 30:
-            hours = str(int(hours) + 1).zfill(2)
-            mins = "00"
-        else:
-            mins = "30"
-        date_str = re.sub(r'[+-]\d{2}:?\d{2}$', f'{sign}{hours}{mins}', date_str)
-    
-    # Try each format
-    for fmt in DATE_FORMATS:
-        try:
-            # Parse with current format
-            dt = datetime.strptime(date_str, fmt)
-            
-            # If timezone is naive, assume UTC
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            
-            return dt
-            
-        except ValueError:
-            continue
-            
-    # Log the error and return None
-    print(f"WARNING: Failed to parse date string in parse_date_for_sorting: '{date_str}'")
-    log_date_error(date_str)
-    return None
+def prepare_chroma_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Prepare metadata for Chroma by converting lists to strings."""
+    converted = {}
+    for key, value in metadata.items():
+        if isinstance(value, list):
+            converted[key] = ', '.join(str(v) for v in value)
+        elif isinstance(value, (str, int, float, bool)):
+            converted[key] = value
+    return converted
 
 def get_thread_batches(mbox_path: str, max_emails: Optional[int] = None) -> Generator[list[list[Message]], None, None]:
     """Load and organize messages from mbox file into batches of threads."""
@@ -424,16 +269,6 @@ def get_thread_batches(mbox_path: str, max_emails: Optional[int] = None) -> Gene
             thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date) or datetime.min.replace(tzinfo=timezone.utc))
             thread_batch.append(thread_messages)
         yield thread_batch
-
-def prepare_chroma_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """Prepare metadata for Chroma by converting lists to strings."""
-    converted = {}
-    for key, value in metadata.items():
-        if isinstance(value, list):
-            converted[key] = ', '.join(str(v) for v in value)
-        elif isinstance(value, (str, int, float, bool)):
-            converted[key] = value
-    return converted
 
 def process_thread_batch(thread_batch: list[list[Message]]) -> list[Document]:
     """Process a single batch of threads into documents."""
