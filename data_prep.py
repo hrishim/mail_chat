@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 from mailbox import mboxMessage
-from typing import Optional, Generator, Union
+from typing import Optional, Generator, Union, Dict, Any
 import json
 import mailbox
 from email import message_from_bytes
@@ -16,8 +16,11 @@ from functools import lru_cache
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS, Chroma
 from langchain_core.documents import Document
+import chromadb
+from db_utils import EmailStore
+from date_utils import TZ_MAP, DATE_FORMATS
 
 # Load environment variables from .env file
 load_dotenv()
@@ -341,318 +344,56 @@ def parse_date_for_sorting(date_str: str) -> Optional[datetime]:
     date_str = re.sub(r'\s+', ' ', date_str)  # Normalize spaces
     date_str = date_str.strip()
 
-    # Handle Unix-style timestamps with timezone but no space
-    # e.g., "Thu Apr 16 20:59:04 2015+0530" -> "Thu Apr 16 20:59:04 2015 +0530"
-    unix_tz_match = re.search(r'(\d{4})[+-]\d{4}$', date_str)
-    if unix_tz_match:
-        year_pos = date_str.find(unix_tz_match.group(1))
-        if year_pos != -1:
-            year_end = year_pos + 4
-            date_str = date_str[:year_end] + ' ' + date_str[year_end:]
-
-    # Map common timezone names to their UTC offsets
-    tz_map = {
-        'EDT': '-0400',  # Eastern Daylight Time
-        'EST': '-0500',  # Eastern Standard Time
-        'CDT': '-0500',  # Central Daylight Time
-        'CST': '-0600',  # Central Standard Time
-        'MDT': '-0600',  # Mountain Daylight Time
-        'MST': '-0700',  # Mountain Standard Time
-        'PDT': '-0700',  # Pacific Daylight Time
-        'PST': '-0800',  # Pacific Standard Time
-        'IST': '+0530',  # Indian Standard Time
-        'GMT': '+0000',  # Greenwich Mean Time
-        'UT': '+0000',   # Universal Time
-    }
-    
     # Replace timezone names with their offsets
-    for tz_name, offset in tz_map.items():
+    for tz_name, offset in TZ_MAP.items():
         if f" {tz_name}" in date_str:
             date_str = date_str.replace(f" {tz_name}", f" {offset}")
             break
 
-    # Handle special case: "Fri May 31 15:00:09 IST 2013" -> "Fri May 31 15:00:09 2013 +0530"
-    tz_year_match = re.search(r'(\d{2}:\d{2}:\d{2})\s+([A-Z]{2,4})\s+(\d{4})', date_str)
-    if tz_year_match:
-        time_str, tz_name, year = tz_year_match.groups()
-        if tz_name in tz_map:
-            date_str = date_str.replace(f"{time_str} {tz_name} {year}", f"{time_str} {year} {tz_map[tz_name]}")
-
-    # Handle special case: "Thu Nov 07 18:30:38 GMT+05:30 2013" -> "Thu Nov 07 18:30:38 2013 +0530"
-    gmt_offset_match = re.search(r'GMT([+-]\d{2}):(\d{2})\s+(\d{4})', date_str)
-    if gmt_offset_match:
-        hour, minute, year = gmt_offset_match.groups()
-        date_str = re.sub(r'GMT([+-]\d{2}):(\d{2})\s+(\d{4})', rf'\3 \1\2', date_str)
-
-    # Handle special case: "Sat Jun 08 12:44:28 GMT+05:30 2013" -> "Sat Jun 08 12:44:28 2013 +0530"
-    gmt_offset_no_space = re.search(r'(\d{2}:\d{2}:\d{2})\s*GMT([+-]\d{2}):(\d{2})\s+(\d{4})', date_str)
-    if gmt_offset_no_space:
-        time_str, hour, minute, year = gmt_offset_no_space.groups()
-        date_str = re.sub(r'(\d{2}:\d{2}:\d{2})\s*GMT([+-]\d{2}):(\d{2})\s+(\d{4})', rf'\1 \4 \2\3', date_str)
-
-    # Handle special case: "Fri May 31 15:00:09 +0530 2013" -> "Fri May 31 15:00:09 2013 +0530"
-    tz_before_year = re.search(r'(\d{2}:\d{2}:\d{2})\s+([+-]\d{4})\s+(\d{4})', date_str)
-    if tz_before_year:
-        time_str, tz, year = tz_before_year.groups()
-        date_str = date_str.replace(f"{time_str} {tz} {year}", f"{time_str} {year} {tz}")
-
-    # Handle weekday with comma and extra spaces: "Monday,  2 Aug 2004" -> "Mon, 2 Aug 2004"
-    weekdays = {
-        'Monday': 'Mon',
-        'Tuesday': 'Tue',
-        'Wednesday': 'Wed',
-        'Thursday': 'Thu',
-        'Friday': 'Fri',
-        'Saturday': 'Sat',
-        'Sunday': 'Sun'
-    }
-    for full, abbr in weekdays.items():
-        if date_str.startswith(full):
-            date_str = date_str.replace(full, abbr, 1)
-            break
-
-    # Try our standard format first
-    try:
-        return datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S%z')
-    except ValueError:
-        pass
-
-    # If that fails, try email formats
-    formats = [
-        '%a, %d %b %Y %H:%M:%S %z',  # Standard email format: 'Sun, 09 Feb 2025 09:37:31 -0800'
-        '%d %b %Y %H:%M:%S %z',      # Without weekday
-        '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
-        '%a, %d %b %Y %H:%M:%S',     # Without timezone
-        '%a %b %d %H:%M:%S %Y %z',   # Unix style with timezone: 'Fri Apr 17 00:16:47 2015 +0530'
-        '%a %b %d %H:%M:%S %Y',      # Unix style: 'Thu Mar 19 14:16:11 2025'
-        '%a, %d %b %Y %H:%M %z',     # Without seconds
-        '%d %b %Y %H:%M %z',         # Without seconds and weekday
-        '%d %b %y %H:%M:%S',         # Short year format: '06 Apr 15 21:57:41'
-        '%d %b %Y %H:%M:%S',         # Same but with full year
-        '%d %b %y %H:%M %z',         # Short year with timezone: '30 Jun 13 07:26 -0800'
-        '%a, %d %b %Y %H:%M:%S',     # Without timezone
-        '%a, %d %b %y %H:%M:%S %z',  # Short year with timezone
-        '%a, %d %b %y %H:%M:%S',     # Short year without timezone
-        '%a, %d %b %Y %H:%M',        # Without seconds or timezone
-        '%a %b %d %H:%M:%S %z %Y',   # Unix style with timezone before year
-        '%d %b %y %H:%M:%S %z',      # Short year with timezone: '26 Nov 09 20:29:04 -0830'
-        '%a, %-d %b %Y %H:%M:%S',    # Single digit day: 'Sat, 4 Oct 2008 09:52:43'
-        '%d %b %Y',                  # Just date: '13 Apr 2006'
-        '%A, %d %b %Y %H:%M:%S %z',  # Full weekday with timezone
-        '%A, %-d %b %Y %H:%M:%S %z', # Full weekday, single digit day with timezone
-    ]
-
-    for fmt in formats:
+    # Handle non-standard timezone offsets
+    if (match := re.search(r'([+-])(\d{2}):?(\d{2})$', date_str)):
+        sign, hours, mins = match.groups()
+        if int(mins) > 30:
+            hours = str(int(hours) + 1).zfill(2)
+            mins = "00"
+        else:
+            mins = "30"
+        date_str = re.sub(r'[+-]\d{2}:?\d{2}$', f'{sign}{hours}{mins}', date_str)
+    
+    # Try each format
+    for fmt in DATE_FORMATS:
         try:
+            # Parse with current format
             dt = datetime.strptime(date_str, fmt)
+            
+            # If timezone is naive, assume UTC
             if dt.tzinfo is None:
-                # If no timezone, assume UTC
-                from datetime import timezone
                 dt = dt.replace(tzinfo=timezone.utc)
+            
             return dt
+            
         except ValueError:
             continue
-
+            
     # Log the error and return None
     print(f"WARNING: Failed to parse date string in parse_date_for_sorting: '{date_str}'")
     log_date_error(date_str)
     return None
 
-def load_mbox(file_path: Union[str, os.PathLike]) -> list[Message]:
-    """Loads an mbox file and extracts messages."""
-    mbox = mailbox.mbox(file_path)
-    messages = []
-    
-    for msg in mbox:
-        try:
-            content = extract_content(msg)
-            if content:
-                content = clean_content(content)
-                
-                # Get Gmail-specific headers
-                gmail_labels = str(msg.get('X-Gmail-Labels', '')).split(',')
-                gmail_labels = [label.strip() for label in gmail_labels if label.strip()]
-                
-                thread_id = str(msg.get('X-GM-THRID', ''))
-                in_reply_to = str(msg.get('In-Reply-To', ''))
-                references = str(msg.get('References', '')).split()
-                message_id = str(msg.get('Message-ID', ''))
-                
-                # Parse and standardize the date
-                date_str = str(msg.get('Date', ''))
-                if not date_str:
-                    print("Warning: Message has no date, skipping")
-                    continue
-                
-                try:
-                    date = parse_email_date(date_str)
-                except ValueError:
-                    print(f"Warning: Could not parse date '{date_str}', skipping message")
-                    continue
-                
-                # Properly decode headers
-                def decode_header_str(header):
-                    if not header:
-                        return ''
-                    try:
-                        return str(make_header(decode_header(str(header))))
-                    except:
-                        return str(header)
-                
-                message = Message(
-                    to=decode_header_str(msg.get('To')),
-                    sender=decode_header_str(msg.get('From')),
-                    subject=decode_header_str(msg.get('Subject')),
-                    date=date,
-                    content=content,
-                    x_gmail_labels=gmail_labels,
-                    x_gm_thrid=thread_id,
-                    inReplyTo=in_reply_to,
-                    references=references,
-                    message_id=message_id
-                )
-                messages.append(message)
-        except Exception as e:
-            print(f"Warning: Error processing message: {e}")
-            continue
-    
-    return messages
-
-def load_mbox_in_chunks(file_path: Union[str, os.PathLike], batch_size: int = 100) -> Generator[list[Message], None, None]:
-    """Loads an mbox file and yields messages in chunks."""
-    mbox = mailbox.mbox(file_path)
-    messages = []
-    
-    for msg in mbox:
-        try:
-            content = extract_content(msg)
-            if content:
-                content = clean_content(content)
-                
-                # Get Gmail-specific headers
-                gmail_labels = msg.get('X-Gmail-Labels', '').split(',')
-                gmail_labels = [label.strip() for label in gmail_labels if label.strip()]
-                
-                thread_id = msg.get('X-GM-THRID')
-                in_reply_to = msg.get('In-Reply-To')
-                references = msg.get('References', '').split()
-                message_id = msg.get('Message-ID', '')
-                
-                # Parse and standardize the date
-                date_str = msg.get('Date')
-                if date_str:
-                    try:
-                        date = parse_email_date(date_str)
-                    except ValueError:
-                        print(f"Warning: Could not parse date '{date_str}', skipping message")
-                        continue
-                else:
-                    print("Warning: Message has no date, skipping")
-                    continue
-                
-                message = Message(
-                    to=msg.get('To', ''),
-                    sender=msg.get('From', ''),
-                    subject=msg.get('Subject', ''),
-                    date=date,
-                    content=content,
-                    x_gmail_labels=gmail_labels,
-                    x_gm_thrid=thread_id,
-                    inReplyTo=in_reply_to,
-                    references=references,
-                    message_id=message_id
-                )
-                messages.append(message)
-                
-                if len(messages) >= batch_size:
-                    yield messages
-                    messages = []
-        except Exception as e:
-            print(f"Warning: Error processing message: {e}")
-            continue
-    
-    if messages:
-        yield messages
-
-def organize_messages(messages: list[Message]) -> dict[str, list[Message]]:
-    """Organize messages by thread ID."""
-    org_msgs: dict[str, list[Message]] = {}
-
-    for msg in messages:
-        if not msg.x_gm_thrid:
-            if 'orphan' not in org_msgs:
-                org_msgs['orphan'] = []
-            org_msgs['orphan'].append(msg)
-        else:
-            org_msgs[msg.x_gm_thrid] = org_msgs.get(msg.x_gm_thrid, []) + [msg]
-
-    # Sorting each list in the dictionary by the 'date' field
-    for key, thread_messages in org_msgs.items():
-        org_msgs[key] = sorted(thread_messages, key=lambda msg: parse_date_for_sorting(msg.date))
-    
-    return org_msgs
-
-def get_thread_batches(mbox_file: str) -> Generator[list[list[Message]], None, None]:
-    """Get batches of threads from mbox file."""
+def get_thread_batches(mbox_path: str, max_emails: Optional[int] = None) -> Generator[list[list[Message]], None, None]:
+    """Load and organize messages from mbox file into batches of threads."""
     current_batch = {}  # thread_id -> list[Message]
+    threads_per_batch = 100  # Process 100 threads at a time
+    email_count = 0
     
-    try:
-        mbox = mailbox.mbox(mbox_file)
-        for idx, message in enumerate(mbox):
-            try:
-                msg = Message.from_email_message(message)
-                if msg is None:
-                    continue
-                
-                thread_id = msg.x_gm_thrid
-                if thread_id not in current_batch:
-                    current_batch[thread_id] = []
-                current_batch[thread_id].append(msg)
-                
-                # Yield when we have accumulated enough threads
-                if len(current_batch) >= 100:  # Process 100 threads at a time
-                    thread_batch = []
-                    for thread_messages in current_batch.values():
-                        # Sort messages by date
-                        thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date) or datetime.min.replace(tzinfo=timezone.utc))
-                        thread_batch.append(thread_messages)
-                    yield thread_batch
-                    current_batch = {}
-                    
-            except Exception as e:
-                print(f"Error processing message {idx}: {e}")
-                with open('date_fmt_error.txt', 'a') as f:
-                    f.write(f"Error in message {idx}: {e}\n")
-                continue
+    # Open and process mbox file
+    mbox = mailbox.mbox(mbox_path)
+    
+    for idx, message in enumerate(mbox):
+        if max_emails and email_count >= max_emails:
+            print(f"Reached max emails limit ({max_emails})")
+            break
         
-        # Yield remaining messages
-        if current_batch:
-            thread_batch = []
-            for thread_messages in current_batch.values():
-                # Sort messages by date
-                thread_messages.sort(key=lambda msg: parse_date_for_sorting(msg.date) or datetime.min.replace(tzinfo=timezone.utc))
-                thread_batch.append(thread_messages)
-            yield thread_batch
-    
-    except Exception as e:
-        print(f"Error processing mbox file: {e}")
-        # Save progress on error
-        if vectorstore is not None:
-            print("Saving vector store state before exit...")
-            vectorstore.save_local(args.vectordb_dir)
-        raise
-
-def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_batch: int = 500, start_idx: int = 0) -> Generator[list[list[Message]], None, None]:
-    """Load messages from mbox file and organize them by thread, yielding batches."""
-    mbox = mailbox.mbox(file_path)
-    current_batch: dict[str, list[Message]] = {}
-    idx = -1
-    
-    for message in mbox:
-        idx += 1
-        if idx < start_idx:
-            continue
-            
         try:
             # Extract thread ID
             thread_id = str(message.get('X-GM-THRID', ''))
@@ -668,6 +409,8 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_
             if thread_id not in current_batch:
                 current_batch[thread_id] = []
             current_batch[thread_id].append(msg)
+            
+            email_count += 1
             
             # If we have enough threads, sort and yield the batch
             if len(current_batch) >= threads_per_batch:
@@ -694,6 +437,16 @@ def load_and_organize_in_chunks(file_path: Union[str, os.PathLike], threads_per_
             thread_batch.append(thread_messages)
         yield thread_batch
 
+def prepare_chroma_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Prepare metadata for Chroma by converting lists to strings."""
+    converted = {}
+    for key, value in metadata.items():
+        if isinstance(value, list):
+            converted[key] = ', '.join(str(v) for v in value)
+        elif isinstance(value, (str, int, float, bool)):
+            converted[key] = value
+    return converted
+
 def process_thread_batch(thread_batch: list[list[Message]]) -> list[Document]:
     """Process a single batch of threads into documents."""
     documents = []
@@ -705,26 +458,21 @@ def process_thread_batch(thread_batch: list[list[Message]]) -> list[Document]:
         # Get thread context
         thread_id = thread_messages[0].x_gm_thrid
         thread_start_date = thread_messages[0].date
-        thread_end_date = thread_messages[-1].date
-        participants = list(set([msg.sender for msg in thread_messages] + [msg.to for msg in thread_messages]))
         
+        # Process each message in thread
         for i, message in enumerate(thread_messages):
-            # Get base metadata from message
+            # Create metadata for the document
             metadata = message.get_metadata()
-            
-            # Add thread context
             metadata.update({
+                'is_chunk': False,
                 'thread_id': thread_id,
+                'message_index': i,
                 'thread_start_date': thread_start_date,
-                'thread_end_date': thread_end_date,
-                'thread_position': i,
-                'thread_length': len(thread_messages),
-                'participants': participants,
-                'is_chunk': False,  # Flag to indicate this is a full message
-                'full_content_id': f"{thread_id}_{i}"  # ID to link chunks back to full content
+                'thread_position': f"{i+1} of {len(thread_messages)}",
+                'full_content_id': f"{thread_id}_{i}"
             })
             
-            # Create document with full content
+            # Create full document
             full_doc = Document(
                 page_content=message.content,
                 metadata=metadata
@@ -742,6 +490,10 @@ def process_thread_batch(thread_batch: list[list[Message]]) -> list[Document]:
                     'full_content_id': f"{thread_id}_{i}"  # Link back to full content
                 })
                 
+                # For Chroma, convert lists to strings in metadata
+                if chunk_metadata:
+                    chunk_metadata = prepare_chroma_metadata(chunk_metadata)
+                
                 chunk_doc = Document(
                     page_content=chunk,
                     metadata=chunk_metadata
@@ -753,8 +505,14 @@ def process_thread_batch(thread_batch: list[list[Message]]) -> list[Document]:
 def parse_args():
     parser = argparse.ArgumentParser(description='Process email threads from mbox file.')
     parser.add_argument('mbox_file', help='Path to mbox file')
+    parser.add_argument('--db-type', choices=['faiss', 'chroma'], default='faiss',
+                      help='Type of vector database to use')
     parser.add_argument('--vectordb-dir', default='./mail_vectordb',
                       help='Directory to store vector database')
+    parser.add_argument('--max-emails', type=int, default=None,
+                      help='Maximum number of emails to process')
+    parser.add_argument('--sqldb-path', default='./email_store.db',
+                      help='Path to SQLite database for storing full documents')
     return parser.parse_args()
 
 def main():
@@ -767,7 +525,7 @@ def main():
     print("Processing mbox file...")
     try:
         # Process messages sequentially
-        for thread_batch in get_thread_batches(args.mbox_file):
+        for thread_batch in get_thread_batches(args.mbox_file, max_emails=args.max_emails):
             # Process each batch
             documents = process_thread_batch(thread_batch)
             all_documents.extend(documents)  # Accumulate all documents
@@ -793,39 +551,67 @@ def main():
         batch_size = 1000
         vectorstore = None
         
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i+batch_size]
-            print(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1} ({len(batch)} chunks)...")
-            
-            if vectorstore is None:
-                # First batch - create new vectorstore
-                vectorstore = FAISS.from_documents(
-                    batch,
-                    embeddings,
-                )
-            else:
-                # Subsequent batches - add to existing vectorstore
-                vectorstore.add_documents(batch)
+        if args.db_type == 'faiss':
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i:i+batch_size]
+                print(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1} ({len(batch)} chunks)...")
                 
-            # Save progress after each batch
-            print(f"Saving progress to {args.vectordb_dir}...")
-            os.makedirs(args.vectordb_dir, exist_ok=True)
+                if vectorstore is None:
+                    # First batch - create new vectorstore
+                    vectorstore = FAISS.from_documents(
+                        batch,
+                        embeddings,
+                    )
+                else:
+                    # Subsequent batches - add to existing vectorstore
+                    vectorstore.add_documents(batch)
+                    
+                # Save progress after each batch
+                print(f"Saving progress to {args.vectordb_dir}...")
+                os.makedirs(args.vectordb_dir, exist_ok=True)
+                vectorstore.save_local(args.vectordb_dir)
+            
+            # Add full documents to docstore without embedding them
+            print(f"Adding {len(full_docs)} full documents to docstore...")
+            for full_doc_id, full_doc in full_docs.items():
+                vectorstore.docstore._dict[f"full_{full_doc_id}"] = full_doc
+            
+            print(f"Saving final vectorstore to {args.vectordb_dir}...")
             vectorstore.save_local(args.vectordb_dir)
+        else:  # chroma
+            client = chromadb.PersistentClient(path=args.vectordb_dir)
+            
+            # Create vectorstore for chunks
+            vectorstore = Chroma(
+                client=client,
+                embedding_function=embeddings,
+                collection_name="email_chunks"
+            )
+            
+            # Add chunks in batches
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i:i+batch_size]
+                print(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1} ({len(batch)} chunks)...")
+                vectorstore.add_documents(batch)
+            
+            # Initialize SQL store for full documents
+            email_store = EmailStore(args.sqldb_path)
+            
+            # Add full documents to SQL database
+            print(f"Adding {len(full_docs)} full documents to SQL database...")
+            for full_doc_id, full_doc in full_docs.items():
+                thread_id, message_index = full_doc_id.split('_')
+                email_store.add_document(
+                    doc_id=f"full_{full_doc_id}",
+                    thread_id=thread_id,
+                    message_index=int(message_index),
+                    content=full_doc.page_content,
+                    metadata=full_doc.metadata
+                )
         
-        # Add full documents to docstore without embedding them
-        print(f"Adding {len(full_docs)} full documents to docstore...")
-        for full_doc_id, full_doc in full_docs.items():
-            vectorstore.docstore._dict[f"full_{full_doc_id}"] = full_doc
-        
-        print(f"Saving final vectorstore to {args.vectordb_dir}...")
-        vectorstore.save_local(args.vectordb_dir)
         print("Done!")
     except Exception as e:
         print(f"Error processing mbox file: {e}")
-        # Save progress on error
-        if vectorstore is not None:
-            print("Saving vector store state before exit...")
-            vectorstore.save_local(args.vectordb_dir)
         raise
 
 if __name__ == '__main__':
