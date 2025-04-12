@@ -1,4 +1,7 @@
 """Date parsing utilities and constants for email processing."""
+import re
+from datetime import datetime, timezone
+from functools import lru_cache
 
 # Timezone name to offset mapping
 TZ_MAP = {
@@ -20,8 +23,8 @@ DATE_FORMATS = [
     '%d %b %Y %H:%M:%S %z',      # Without weekday
     '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
     '%a, %d %b %Y %H:%M:%S',     # Without timezone
-    '%a, %d %b %Y %H:%M:%S %z',  # Without seconds
-    '%d %b %Y %H:%M:%S %z',      # Without seconds and weekday
+    '%a, %d %b %Y %H:%M %z',     # Without seconds
+    '%d %b %Y %H:%M %z',         # Without seconds and weekday
     
     # Unix style formats
     '%a %b %d %H:%M:%S %Y %z',   # With timezone
@@ -30,7 +33,7 @@ DATE_FORMATS = [
     
     # Short year formats
     '%d %b %y %H:%M:%S',         # Basic short year
-    '%d %b %y %H:%M:%S %z',      # Short year with timezone
+    '%d %b %y %H:%M %z',         # Short year with timezone
     '%a, %d %b %y %H:%M:%S %z',  # Full format with short year
     '%a, %d %b %y %H:%M:%S',     # Without timezone
     
@@ -48,10 +51,6 @@ DATE_FORMATS = [
     '%a %b %d %H:%M:%S GMT%z %Y',  # GMT with offset
     '%a %b %d %H:%M:%S %z %Y',     # Offset before year
 ]
-
-import re
-from datetime import datetime, timezone
-from functools import lru_cache
 
 @lru_cache(maxsize=10000)
 def parse_email_date(date_str: str) -> str:
