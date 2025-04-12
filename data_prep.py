@@ -16,7 +16,8 @@ from functools import lru_cache
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-from langchain_community.vectorstores import FAISS, Chroma
+from langchain_community.vectorstores import FAISS
+from langchain_chroma import Chroma
 from langchain_core.documents import Document
 import chromadb
 from db_utils import EmailStore
