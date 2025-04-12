@@ -1,17 +1,12 @@
-from multiprocessing import Pool, cpu_count
 import argparse
 import os
 from pathlib import Path
 from datetime import datetime, timezone
-from mailbox import mboxMessage
-from typing import Optional, Generator, Union, Dict, Any
-import json
 import mailbox
-from email import message_from_bytes
 from email.header import decode_header, make_header
 from bs4 import BeautifulSoup
 import re
-from functools import lru_cache
+from typing import Optional, Dict, Any, Generator, List
 
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -87,7 +82,7 @@ class Message:
         )
 
     @classmethod
-    def from_email_message(cls, message: mboxMessage) -> Optional['Message']:
+    def from_email_message(cls, message: mailbox.mboxMessage) -> Optional['Message']:
         """Create Message object from mboxMessage."""
         try:
             content = extract_content(message)
@@ -142,7 +137,7 @@ class Message:
             print(f"Error creating Message object: {e}")
             return None
 
-def extract_content(message: mboxMessage) -> Optional[str]:
+def extract_content(message: mailbox.mboxMessage) -> Optional[str]:
     """Extracts content from an email message."""
     if message.is_multipart():
         content = ''
