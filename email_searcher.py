@@ -107,9 +107,25 @@ class EmailSearcher:
             vectordb_path = vectordb_path[1:-1]
             if self.debug_log:
                 log_debug(f"Removed quotes from path: {vectordb_path!r}")
-            
+        
         if not os.path.exists(vectordb_path):
             raise ValueError(f"Vector store path '{vectordb_path}' does not exist")
+            
+        # Check if the path contains FAISS database files
+        index_file = os.path.join(vectordb_path, "index.faiss")
+        docstore_file = os.path.join(vectordb_path, "index.pkl")
+        
+        if not os.path.exists(index_file) or not os.path.exists(docstore_file):
+            raise ValueError(
+                f"Path '{vectordb_path}' does not appear to be a valid FAISS database. "
+                f"Missing required files: "
+                f"{'index.faiss' if not os.path.exists(index_file) else ''}"
+                f"{', ' if not os.path.exists(index_file) and not os.path.exists(docstore_file) else ''}"
+                f"{'index.pkl' if not os.path.exists(docstore_file) else ''}"
+            )
+            
+        if self.debug_log:
+            log_debug(f"Found valid FAISS database at {vectordb_path}")
             
         self.vectorstore = FAISS.load_local(
             vectordb_path,
@@ -203,7 +219,7 @@ class EmailSearcher:
         Args:
             thread_id: Unique identifier for the email thread
             message_index: Index of the message in the thread
-            
+        
         Returns:
             Optional[Document]: A document containing the complete thread if found,
                           None if no document found for the thread_id and message_index
@@ -221,11 +237,10 @@ class EmailSearcher:
         if self.debug_log:
             thread_time = time.perf_counter() - start_time
             if thread_doc:
-                log_debug(f"  Found thread document with {len(thread_doc.page_content)} characters")
+                log_debug(f"  Found thread document ({len(thread_doc.page_content)} chars) in {thread_time:.3f} seconds")
             else:
-                log_debug(f"  No thread document found for ID: {full_doc_id}")
-            log_debug(f"  Thread retrieval time: {thread_time:.3f} seconds")
-            
+                log_debug(f"  No thread document found for {full_doc_id}")
+        
         return thread_doc
 
     def _process_docs_with_limit(
