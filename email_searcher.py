@@ -95,65 +95,69 @@ class EmailSearcher:
             api_key=ngc_key
         )
         
-        # Load vector store
-        raw_vector_db = os.environ.get("VECTOR_DB")
-        if self.debug_log:
-            log_debug(f"Raw VECTOR_DB value: {raw_vector_db!r}")
-        
-        vectordb_path = os.getenv("VECTOR_DB", "./mail_vectordb")
-        if self.debug_log:
-            log_debug(f"Vector database path from .env: {vectordb_path!r}")
-        
-        # Remove quotes if present
-        if vectordb_path and vectordb_path.startswith('"') and vectordb_path.endswith('"'):
-            vectordb_path = vectordb_path[1:-1]
-            if self.debug_log:
-                log_debug(f"Removed quotes from path: {vectordb_path!r}")
-        
-        if not os.path.exists(vectordb_path):
-            raise ValueError(f"Vector store path '{vectordb_path}' does not exist")
-        
+        # Load vector store paths from new .env variables
+        faiss_db_path = os.getenv("FAISS_DB")
+        langchain_chroma_path = os.getenv("LANGCHAIN_CHROMA")
+        sqlite_db_path = os.getenv("SQLITE_DB")
+
+        # Remove quotes if present in paths
+        if faiss_db_path and faiss_db_path.startswith('"') and faiss_db_path.endswith('"'):
+            faiss_db_path = faiss_db_path[1:-1]
+        if langchain_chroma_path and langchain_chroma_path.startswith('"') and langchain_chroma_path.endswith('"'):
+            langchain_chroma_path = langchain_chroma_path[1:-1]
+        if sqlite_db_path and sqlite_db_path.startswith('"') and sqlite_db_path.endswith('"'):
+            sqlite_db_path = sqlite_db_path[1:-1]
+
+        # Store the SQLite DB path for future use
+        self.sqlite_db_path = sqlite_db_path
+
         # Determine DB type from .env
         db_type = os.getenv("DB_TYPE", "faiss").lower()
         if db_type not in ("faiss", "langchain_chroma"):
             raise ValueError(f"Unsupported DB_TYPE '{db_type}'. Must be 'faiss' or 'langchain_chroma'.")
         if self.debug_log:
             log_debug(f"DB_TYPE from .env: {db_type}")
-        
+
         if db_type == "faiss":
-            # Check for FAISS files
-            index_file = os.path.join(vectordb_path, "index.faiss")
-            docstore_file = os.path.join(vectordb_path, "index.pkl")
+            if self.debug_log:
+                log_debug(f"Using FAISS_DB path: {faiss_db_path!r}")
+            if not faiss_db_path or not os.path.exists(faiss_db_path):
+                raise ValueError(f"FAISS_DB path '{faiss_db_path}' does not exist or is not set in .env")
+            index_file = os.path.join(faiss_db_path, "index.faiss")
+            docstore_file = os.path.join(faiss_db_path, "index.pkl")
             if not os.path.exists(index_file) or not os.path.exists(docstore_file):
                 raise ValueError(
-                    f"Path '{vectordb_path}' does not appear to be a valid FAISS database. "
+                    f"Path '{faiss_db_path}' does not appear to be a valid FAISS database. "
                     f"Missing required files: "
                     f"{'index.faiss' if not os.path.exists(index_file) else ''}"
                     f"{', ' if not os.path.exists(index_file) and not os.path.exists(docstore_file) else ''}"
                     f"{'index.pkl' if not os.path.exists(docstore_file) else ''}"
                 )
             if self.debug_log:
-                log_debug(f"Found valid FAISS database at {vectordb_path}")
+                log_debug(f"Found valid FAISS database at {faiss_db_path}")
             self.vectorstore = FAISS.load_local(
-                vectordb_path,
+                faiss_db_path,
                 self.embeddings,
                 allow_dangerous_deserialization=True
             )
         elif db_type == "langchain_chroma":
-            # Check for langchain_chroma (AnnLite) DB files
+            if self.debug_log:
+                log_debug(f"Using LANGCHAIN_CHROMA path: {langchain_chroma_path!r}")
+            if not langchain_chroma_path or not os.path.exists(langchain_chroma_path):
+                raise ValueError(f"LANGCHAIN_CHROMA path '{langchain_chroma_path}' does not exist or is not set in .env")
             expected_files = [
                 "data_level0.bin", "header.bin", "index_metadata.pickle", "length.bin", "link_lists.bin"
             ]
-            found = any(os.path.exists(os.path.join(vectordb_path, fname)) for fname in expected_files)
+            found = any(os.path.exists(os.path.join(langchain_chroma_path, fname)) for fname in expected_files)
             if not found:
                 raise ValueError(
-                    f"Path '{vectordb_path}' does not appear to be a valid langchain_chroma database. "
+                    f"Path '{langchain_chroma_path}' does not appear to be a valid langchain_chroma database. "
                     f"None of the expected files found: {expected_files}"
                 )
             if self.debug_log:
-                log_debug(f"Found valid langchain_chroma database at {vectordb_path}")
+                log_debug(f"Found valid langchain_chroma database at {langchain_chroma_path}")
             self.vectorstore = Chroma(
-                persist_directory=vectordb_path,
+                persist_directory=langchain_chroma_path,
                 embedding_function=self.embeddings
             )
 
