@@ -1,0 +1,10 @@
+# Example environment configuration for mail_chat
+# Copy this file to .env and fill in your actual values
+
+NGC_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+HF_TOKEN==hf_xxxxxxxxxxxxxxxxxx
+USER_FULLNAME="Your Full Name"
+USER_EMAIL="Your email address"
+DB_TYPE="langchain_chroma"
+VECTOR_DB="Path to the vector database of your email"
+SQLITE_DB="Path to the SQLITE database of your emails. This contains full emails."
