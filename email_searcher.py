@@ -12,6 +12,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 import chromadb
 from utils import log_debug
+from db_utils import EmailStore
 
 @dataclass
 class SearchConfig:
@@ -110,6 +111,7 @@ class EmailSearcher:
 
         # Store the SQLite DB path for future use
         self.sqlite_db_path = sqlite_db_path
+        self.email_store = None
 
         # Determine DB type from .env
         db_type = os.getenv("DB_TYPE", "faiss").lower()
@@ -117,6 +119,8 @@ class EmailSearcher:
             raise ValueError(f"Unsupported DB_TYPE '{db_type}'. Must be 'faiss' or 'langchain_chroma'.")
         if self.debug_log:
             log_debug(f"DB_TYPE from .env: {db_type}")
+        
+        self.db_type = db_type
 
         if db_type == "faiss":
             if self.debug_log:
@@ -160,6 +164,13 @@ class EmailSearcher:
                 persist_directory=langchain_chroma_path,
                 embedding_function=self.embeddings
             )
+            
+            # Initialize EmailStore for retrieving full documents when using Chroma
+            if sqlite_db_path and os.path.exists(sqlite_db_path):
+                self.email_store = EmailStore(sqlite_db_path)
+            else:
+                if self.debug_log:
+                    log_debug(f"Warning: SQLite DB path '{sqlite_db_path}' does not exist. Full thread retrieval will not work.")
 
     def estimate_tokens(self, text: str) -> int:
         """Estimate number of tokens in text using character count.
@@ -259,8 +270,20 @@ class EmailSearcher:
         # Construct the full document ID
         full_doc_id = f"full_{thread_id}_{message_index}"
         
-        # Retrieve the document directly from the docstore
-        thread_doc = self.vectorstore.docstore._dict.get(full_doc_id)
+        thread_doc = None
+        
+        if self.db_type == "faiss":
+            # Retrieve the document directly from the FAISS docstore
+            thread_doc = self.vectorstore.docstore._dict.get(full_doc_id)
+        elif self.db_type == "langchain_chroma" and self.email_store:
+            # Retrieve the document from the SQLite database
+            doc_data = self.email_store.get_document(full_doc_id)
+            if doc_data:
+                # Convert the SQLite document to a LangChain Document
+                thread_doc = Document(
+                    page_content=doc_data['content'],
+                    metadata=doc_data['metadata']
+                )
         
         if self.debug_log:
             thread_time = time.perf_counter() - start_time
@@ -368,7 +391,7 @@ class EmailSearcher:
         """Search for relevant email content using semantic similarity.
         
         This is the main search method that orchestrates the complete search process:
-        1. Initial semantic search using FAISS vector similarity
+        1. Initial semantic search using vector similarity
         2. Optional reranking using cosine similarity
         3. Optional reconstruction of full email threads
         
@@ -403,7 +426,21 @@ class EmailSearcher:
             log_debug(f"  Retrieving {initial_k} initial documents")
             
         try:
-            initial_docs = self.vectorstore.similarity_search(query, k=initial_k)
+            # Apply filter if provided
+            filter_dict = config.chunk_filter if config.chunk_filter else None
+            
+            # For Chroma, we need to use the filter parameter
+            if self.db_type == "langchain_chroma" and filter_dict:
+                if self.debug_log:
+                    log_debug(f"  Applying filter: {filter_dict}")
+                initial_docs = self.vectorstore.similarity_search(
+                    query, 
+                    k=initial_k,
+                    filter=filter_dict
+                )
+            else:
+                initial_docs = self.vectorstore.similarity_search(query, k=initial_k)
+                
             if self.debug_log:
                 log_debug(f"  Successfully retrieved {len(initial_docs)} documents")
         except Exception as e:
