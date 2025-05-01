@@ -81,7 +81,7 @@ class EmailSearcher:
         # Load environment variables from the project root directory
         project_root = os.path.dirname(os.path.abspath(__file__))
         dotenv_path = os.path.join(project_root, '.env')
-        load_dotenv(dotenv_path)
+        load_dotenv(dotenv_path, override=True)
         
         if self.debug_log:
             log_debug(f"Loading environment variables from: {dotenv_path}")
@@ -160,9 +160,17 @@ class EmailSearcher:
                 )
             if self.debug_log:
                 log_debug(f"Found valid langchain_chroma database at {langchain_chroma_path}")
+                
+            # Use the parent directory of the UUID directory for the Chroma client
+            chroma_dir = os.path.dirname(langchain_chroma_path)
+            if self.debug_log:
+                log_debug(f"Using Chroma client directory: {chroma_dir}")
+                
+            # Initialize Chroma with the correct directory path and collection name
             self.vectorstore = Chroma(
-                persist_directory=langchain_chroma_path,
-                embedding_function=self.embeddings
+                persist_directory=chroma_dir,
+                embedding_function=self.embeddings,
+                collection_name="email_chunks"  # Match the collection name used in data_prep.py
             )
             
             # Initialize EmailStore for retrieving full documents when using Chroma
