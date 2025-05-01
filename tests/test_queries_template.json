@@ -34,6 +34,21 @@
       "id": "multi_query_test",
       "query": "Find emails about flight bookings in 2013",
       "method": "multi_query"
+    },
+        {
+      "id": "invoice_search",
+      "query": "When did I last receive an invoice from Apple?",
+      "method": ""
+    },
+    {
+      "id": "",
+      "query": "Do I have any upcoming bills or payment reminders?",
+      "method": ""
+    },
+    {
+      "id": "",
+      "query": "What Amazon orders have I placed in the past month?",
+      "method": ""
     }
   ]
 }
