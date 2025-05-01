@@ -107,7 +107,12 @@ class Message:
                 date = "1970-01-01 00:00:00+0000"
             else:
                 try:
-                    date = parse_date_for_sorting(date_str)
+                    parsed_date = parse_date_for_sorting(date_str)
+                    if parsed_date is not None:
+                        date = parsed_date.strftime('%Y-%m-%d %H:%M:%S%z')
+                    else:
+                        print("Warning: Could not parse date, using default date")
+                        date = "1970-01-01 00:00:00+0000"
                 except ValueError:
                     print("Warning: Could not parse date, using default date")
                     date = "1970-01-01 00:00:00+0000"

@@ -119,6 +119,9 @@ https://haystack.deepset.ai/cookbook/query_decomposition
 
 https://python.langchain.com/docs/tutorials/rag/
 
+Different howtos: Including how to do multiple queries, how to combine results  from multiple retrievers, generate multiple embeddings, retreive whole documents for a chunk etc
+
+https://python.langchain.com/docs/how_to/
 
 Data Retreivers:
 
@@ -127,7 +130,6 @@ https://python.langchain.com/docs/tutorials/retrievers/
 Self-Query:
 https://python.langchain.com/docs/how_to/self_query/
 https://github.com/langchain-ai/langchain/blob/master/cookbook/self_query_hotel_search.ipynb
-
 
 -----------------------
 
