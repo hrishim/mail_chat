@@ -3,37 +3,52 @@
     {
       "id": "fastag_toll",
       "query": "Where did I pay FASTag Toll on 2 Dec 2024?",
-      "method": "simple_qa"
+      "method": "decomposition"
     },
     {
       "id": "filter_coffee",
       "query": "Have I ordered from Filter Coffee?",
-      "method": "simple_qa"
+      "method": "self_query"
     },
     {
       "id": "prabha_email",
       "query": "What is Prabha Sundar's email?",
-      "method": "simple_qa"
+      "method": "self_query"
     },
     {
       "id": "seshambal_email",
       "query": "What is Seshambal's email?",
-      "method": "simple_qa"
+      "method": "self_query"
     },
     {
       "id": "sathyavasu_email",
       "query": "What is Sathyavasu's email",
-      "method": "simple_qa"
+      "method": "self_query"
     },
     {
       "id": "axis_email",
       "query": "What is Axis Bank's email?",
-      "method": "simple_qa"
+      "method": "self_query"
     },
     {
       "id": "multi_query_test",
       "query": "Find emails about flight bookings in 2013",
       "method": "multi_query"
+    },
+    {
+      "id": "invoice_search",
+      "query": "When did I last receive an invoice from Apple?",
+      "method": "step_back"
+    },
+    {
+      "id": "upcoming_bills",
+      "query": "Do I have any upcoming bills or payment reminders?",
+      "method": "hyde"
+    },
+    {
+      "id": "amazon_orders",
+      "query": "What Amazon orders have I placed in the past month?",
+      "method": "decomposition"
     }
   ]
 }
