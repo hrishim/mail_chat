@@ -262,7 +262,8 @@ class DockerContainerTester:
         """Test model inference with a simple prompt."""
         test_payload = {
             "model": self.config.model_name,
-            "messages": [{"role": "user", "content": "Write a limerick about the wonders of GPU computing."}],
+            #"messages": [{"role": "user", "content": "Write a limerick about the wonders of GPU computing."}],
+            "messages": [{"role": "user", "content": "You are an AI language model assistant. Your task is to generate 3 different versions of the given user question to retrieve relevant documents from a vector database. By generating multiple perspectives on the user question, your goal is to help the user overcome some of the limitations of distance-based similarity search. Provide these alternative questions separated by newlines. Original question: Find emails about flight bookings in 2013"}],
             "max_tokens": 1024
         }
         
