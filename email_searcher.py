@@ -9,7 +9,10 @@ from dotenv import load_dotenv
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+import chromadb
 from utils import log_debug
+from db_utils import EmailStore
 
 @dataclass
 class SearchConfig:
@@ -78,7 +81,7 @@ class EmailSearcher:
         # Load environment variables from the project root directory
         project_root = os.path.dirname(os.path.abspath(__file__))
         dotenv_path = os.path.join(project_root, '.env')
-        load_dotenv(dotenv_path)
+        load_dotenv(dotenv_path, override=True)
         
         if self.debug_log:
             log_debug(f"Loading environment variables from: {dotenv_path}")
@@ -93,29 +96,89 @@ class EmailSearcher:
             api_key=ngc_key
         )
         
-        # Load vector store
-        raw_vector_db = os.environ.get("VECTOR_DB")
+        # Load vector store paths from new .env variables
+        faiss_db_path = os.getenv("FAISS_DB")
+        langchain_chroma_path = os.getenv("LANGCHAIN_CHROMA")
+        sqlite_db_path = os.getenv("SQLITE_DB")
+
+        # Remove quotes if present in paths
+        if faiss_db_path and faiss_db_path.startswith('"') and faiss_db_path.endswith('"'):
+            faiss_db_path = faiss_db_path[1:-1]
+        if langchain_chroma_path and langchain_chroma_path.startswith('"') and langchain_chroma_path.endswith('"'):
+            langchain_chroma_path = langchain_chroma_path[1:-1]
+        if sqlite_db_path and sqlite_db_path.startswith('"') and sqlite_db_path.endswith('"'):
+            sqlite_db_path = sqlite_db_path[1:-1]
+
+        # Store the SQLite DB path for future use
+        self.sqlite_db_path = sqlite_db_path
+        self.email_store = None
+
+        # Determine DB type from .env
+        db_type = os.getenv("DB_TYPE", "faiss").lower()
+        if db_type not in ("faiss", "langchain_chroma"):
+            raise ValueError(f"Unsupported DB_TYPE '{db_type}'. Must be 'faiss' or 'langchain_chroma'.")
         if self.debug_log:
-            log_debug(f"Raw VECTOR_DB value: {raw_vector_db!r}")
-            
-        vectordb_path = os.getenv("VECTOR_DB", "./mail_vectordb")
-        if self.debug_log:
-            log_debug(f"Vector database path from .env: {vectordb_path!r}")
-            
-        # Try to fix path if it has quotes
-        if vectordb_path and vectordb_path.startswith('"') and vectordb_path.endswith('"'):
-            vectordb_path = vectordb_path[1:-1]
+            log_debug(f"DB_TYPE from .env: {db_type}")
+        
+        self.db_type = db_type
+
+        if db_type == "faiss":
             if self.debug_log:
-                log_debug(f"Removed quotes from path: {vectordb_path!r}")
+                log_debug(f"Using FAISS_DB path: {faiss_db_path!r}")
+            if not faiss_db_path or not os.path.exists(faiss_db_path):
+                raise ValueError(f"FAISS_DB path '{faiss_db_path}' does not exist or is not set in .env")
+            index_file = os.path.join(faiss_db_path, "index.faiss")
+            docstore_file = os.path.join(faiss_db_path, "index.pkl")
+            if not os.path.exists(index_file) or not os.path.exists(docstore_file):
+                raise ValueError(
+                    f"Path '{faiss_db_path}' does not appear to be a valid FAISS database. "
+                    f"Missing required files: "
+                    f"{'index.faiss' if not os.path.exists(index_file) else ''}"
+                    f"{', ' if not os.path.exists(index_file) and not os.path.exists(docstore_file) else ''}"
+                    f"{'index.pkl' if not os.path.exists(docstore_file) else ''}"
+                )
+            if self.debug_log:
+                log_debug(f"Found valid FAISS database at {faiss_db_path}")
+            self.vectorstore = FAISS.load_local(
+                faiss_db_path,
+                self.embeddings,
+                allow_dangerous_deserialization=True
+            )
+        elif db_type == "langchain_chroma":
+            if self.debug_log:
+                log_debug(f"Using LANGCHAIN_CHROMA path: {langchain_chroma_path!r}")
+            if not langchain_chroma_path or not os.path.exists(langchain_chroma_path):
+                raise ValueError(f"LANGCHAIN_CHROMA path '{langchain_chroma_path}' does not exist or is not set in .env")
+            expected_files = [
+                "data_level0.bin", "header.bin", "index_metadata.pickle", "length.bin", "link_lists.bin"
+            ]
+            found = any(os.path.exists(os.path.join(langchain_chroma_path, fname)) for fname in expected_files)
+            if not found:
+                raise ValueError(
+                    f"Path '{langchain_chroma_path}' does not appear to be a valid langchain_chroma database. "
+                    f"None of the expected files found: {expected_files}"
+                )
+            if self.debug_log:
+                log_debug(f"Found valid langchain_chroma database at {langchain_chroma_path}")
+                
+            # Use the parent directory of the UUID directory for the Chroma client
+            chroma_dir = os.path.dirname(langchain_chroma_path)
+            if self.debug_log:
+                log_debug(f"Using Chroma client directory: {chroma_dir}")
+                
+            # Initialize Chroma with the correct directory path and collection name
+            self.vectorstore = Chroma(
+                persist_directory=chroma_dir,
+                embedding_function=self.embeddings,
+                collection_name="email_chunks"  # Match the collection name used in data_prep.py
+            )
             
-        if not os.path.exists(vectordb_path):
-            raise ValueError(f"Vector store path '{vectordb_path}' does not exist")
-            
-        self.vectorstore = FAISS.load_local(
-            vectordb_path,
-            self.embeddings,
-            allow_dangerous_deserialization=True
-        )
+            # Initialize EmailStore for retrieving full documents when using Chroma
+            if sqlite_db_path and os.path.exists(sqlite_db_path):
+                self.email_store = EmailStore(sqlite_db_path)
+            else:
+                if self.debug_log:
+                    log_debug(f"Warning: SQLite DB path '{sqlite_db_path}' does not exist. Full thread retrieval will not work.")
 
     def estimate_tokens(self, text: str) -> int:
         """Estimate number of tokens in text using character count.
@@ -203,7 +266,7 @@ class EmailSearcher:
         Args:
             thread_id: Unique identifier for the email thread
             message_index: Index of the message in the thread
-            
+        
         Returns:
             Optional[Document]: A document containing the complete thread if found,
                           None if no document found for the thread_id and message_index
@@ -215,17 +278,28 @@ class EmailSearcher:
         # Construct the full document ID
         full_doc_id = f"full_{thread_id}_{message_index}"
         
-        # Retrieve the document directly from the docstore
-        thread_doc = self.vectorstore.docstore._dict.get(full_doc_id)
+        thread_doc = None
+        
+        if self.db_type == "faiss":
+            # Retrieve the document directly from the FAISS docstore
+            thread_doc = self.vectorstore.docstore._dict.get(full_doc_id)
+        elif self.db_type == "langchain_chroma" and self.email_store:
+            # Retrieve the document from the SQLite database
+            doc_data = self.email_store.get_document(full_doc_id)
+            if doc_data:
+                # Convert the SQLite document to a LangChain Document
+                thread_doc = Document(
+                    page_content=doc_data['content'],
+                    metadata=doc_data['metadata']
+                )
         
         if self.debug_log:
             thread_time = time.perf_counter() - start_time
             if thread_doc:
-                log_debug(f"  Found thread document with {len(thread_doc.page_content)} characters")
+                log_debug(f"  Found thread document ({len(thread_doc.page_content)} chars) in {thread_time:.3f} seconds")
             else:
-                log_debug(f"  No thread document found for ID: {full_doc_id}")
-            log_debug(f"  Thread retrieval time: {thread_time:.3f} seconds")
-            
+                log_debug(f"  No thread document found for {full_doc_id}")
+        
         return thread_doc
 
     def _process_docs_with_limit(
@@ -325,7 +399,7 @@ class EmailSearcher:
         """Search for relevant email content using semantic similarity.
         
         This is the main search method that orchestrates the complete search process:
-        1. Initial semantic search using FAISS vector similarity
+        1. Initial semantic search using vector similarity
         2. Optional reranking using cosine similarity
         3. Optional reconstruction of full email threads
         
@@ -360,7 +434,21 @@ class EmailSearcher:
             log_debug(f"  Retrieving {initial_k} initial documents")
             
         try:
-            initial_docs = self.vectorstore.similarity_search(query, k=initial_k)
+            # Apply filter if provided
+            filter_dict = config.chunk_filter if config.chunk_filter else None
+            
+            # For Chroma, we need to use the filter parameter
+            if self.db_type == "langchain_chroma" and filter_dict:
+                if self.debug_log:
+                    log_debug(f"  Applying filter: {filter_dict}")
+                initial_docs = self.vectorstore.similarity_search(
+                    query, 
+                    k=initial_k,
+                    filter=filter_dict
+                )
+            else:
+                initial_docs = self.vectorstore.similarity_search(query, k=initial_k)
+                
             if self.debug_log:
                 log_debug(f"  Successfully retrieved {len(initial_docs)} documents")
         except Exception as e:

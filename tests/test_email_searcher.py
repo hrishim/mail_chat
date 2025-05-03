@@ -29,8 +29,47 @@ def test_token_limiting(log_file=None):
     setup_debug_logging(debug_enabled=True, debug_log_path=log_file)
     log_debug("Starting test email searcher")
     
+    # Force DB_TYPE to use Chroma for this test
+    os.environ["DB_TYPE"] = "langchain_chroma"
+    
     # Initialize email searcher with debug logging and log file
     searcher = EmailSearcher(debug_log=True, log_file=log_file)
+    
+    # Debug Chroma database
+    log_debug("\n=== CHROMA DATABASE DEBUG ===")
+    if hasattr(searcher.vectorstore, '_client'):
+        # List all collections
+        try:
+            collections = searcher.vectorstore._client.list_collections()
+            log_debug(f"Available collections: {[c.name for c in collections]}")
+        except Exception as e:
+            log_debug(f"Error listing collections: {str(e)}")
+            
+    if hasattr(searcher.vectorstore, '_collection'):
+        count = searcher.vectorstore._collection.count()
+        log_debug(f"Chroma collection count: {count}")
+        
+        # Try to get some sample documents to check metadata
+        try:
+            sample_ids = searcher.vectorstore._collection.get(limit=5)
+            log_debug(f"Sample document IDs: {sample_ids['ids']}")
+            log_debug(f"Sample document metadatas: {sample_ids['metadatas']}")
+        except Exception as e:
+            log_debug(f"Error getting sample documents: {str(e)}")
+    else:
+        log_debug("Chroma collection not available for inspection")
+        
+    # Debug SQLite database
+    log_debug("\n=== SQLITE DATABASE DEBUG ===")
+    log_debug(f"SQLite DB path: {searcher.sqlite_db_path}")
+    log_debug(f"EmailStore initialized: {searcher.email_store is not None}")
+    if searcher.email_store:
+        try:
+            # Try to get a count of documents in the SQLite database
+            count = searcher.email_store.get_document_count()
+            log_debug(f"SQLite document count: {count}")
+        except Exception as e:
+            log_debug(f"Error getting SQLite document count: {str(e)}")
     
     # Test token estimation using tiktoken
     text = "This is a test string for token estimation."
