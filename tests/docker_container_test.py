@@ -4,6 +4,7 @@ import logging
 import time
 import subprocess
 import os
+import sys
 from typing import Optional, Dict, Any, NamedTuple
 from pathlib import Path
 from dotenv import load_dotenv
@@ -17,6 +18,7 @@ class ContainerConfig(NamedTuple):
     image: str
     port: int
     model_name: str
+    shm_size: str = "2g"  # Default shared memory size
 
 class DockerContainerTester:
     # Default container configurations
@@ -32,6 +34,13 @@ class DockerContainerTester:
             image="nvcr.io/nim/meta/llama-3.1-8b-instruct:latest",
             port=8001,
             model_name="meta/llama-3.1-8b-instruct"
+        ),
+        "deepseek-r1": ContainerConfig(
+            name="deepseek-r1-distill-llama-8b",
+            image="nvcr.io/nim/deepseek-ai/deepseek-r1-distill-llama-8b:1.5.2",
+            port=8000,
+            model_name="deepseek-ai/deepseek-r1-distill-llama-8b",
+            shm_size="16GB"
         )
     }
     
@@ -169,7 +178,7 @@ class DockerContainerTester:
                 "-v", f"{nim_cache}:/opt/nim/.cache",
                 "-u", str(os.getuid()),
                 "-p", f"{self.config.port}:{self.config.port}",
-                "--shm-size=2g",
+                "--shm-size", self.config.shm_size,
                 "--ulimit", "memlock=-1",
                 "--ipc=host",
                 self.config.image
@@ -254,7 +263,7 @@ class DockerContainerTester:
         test_payload = {
             "model": self.config.model_name,
             "messages": [{"role": "user", "content": "Write a limerick about the wonders of GPU computing."}],
-            "max_tokens": 64
+            "max_tokens": 1024
         }
         
         try:
@@ -280,8 +289,12 @@ class DockerContainerTester:
             self._log(f"Model inference test failed with error: {str(e)}", "error")
             return False
     
-    def run_all_tests(self) -> Dict[str, bool]:
-        """Run all container tests and return results."""
+    def run_all_tests(self, init_wait_seconds: int = 30) -> Dict[str, bool]:
+        """Run all container tests and return results.
+        
+        Args:
+            init_wait_seconds: Number of seconds to wait for container initialization
+        """
         results = {
             "docker_login": False,
             "container_start": False,
@@ -307,9 +320,9 @@ class DockerContainerTester:
                 self._log("Container start failed, skipping remaining tests", "error")
                 return results
                 
-            # Wait fixed 30 seconds for container to initialize
-            self._log("Waiting 30 seconds for container to initialize...")
-            time.sleep(30)
+            # Wait for container to initialize
+            self._log(f"Waiting {init_wait_seconds} seconds for container to initialize...")
+            time.sleep(init_wait_seconds)
             
             # Test container health
             results["health_check"] = self.test_container_health()
@@ -355,8 +368,43 @@ def test_all_containers(log_file: str = "docker_test.log") -> Dict[str, Dict[str
 
 
 if __name__ == "__main__":
-    # Test all containers
-    results = test_all_containers()
+    import argparse
+    
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Test Docker containers for AI models")
+    parser.add_argument("--container", type=str, help="Specific container key to test (default: test all containers)")
+    parser.add_argument("--log-dir", type=str, default="test_results", help="Directory to store log files (default: test_results)")
+    parser.add_argument("--init-wait", type=int, default=30, help="Seconds to wait for container initialization (default: 30)")
+    args = parser.parse_args()
+    
+    # Create log directory if it doesn't exist
+    log_dir = os.path.join(os.path.dirname(__file__), args.log_dir)
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Get timestamp for log files
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    
+    if args.container:
+        # Test specific container
+        if args.container not in DockerContainerTester.CONTAINER_CONFIGS:
+            print(f"Error: Unknown container key '{args.container}'")
+            print(f"Valid keys are: {list(DockerContainerTester.CONTAINER_CONFIGS.keys())}")
+            sys.exit(1)
+            
+        print(f"\nTesting container: {args.container}")
+        log_file = os.path.join(log_dir, f"{args.container}_test_{timestamp}.log")
+        tester = DockerContainerTester(log_file=log_file, container_key=args.container)
+        results = {args.container: tester.run_all_tests(init_wait_seconds=args.init_wait)}
+    else:
+        # Test all containers
+        log_base = os.path.join(log_dir, f"container_test_{timestamp}")
+        results = {}
+        
+        for container_key in DockerContainerTester.CONTAINER_CONFIGS:
+            print(f"\nTesting container: {container_key}")
+            log_file = f"{log_base}_{container_key}.log"
+            tester = DockerContainerTester(log_file=log_file, container_key=container_key)
+            results[container_key] = tester.run_all_tests(init_wait_seconds=args.init_wait)
     
     # Print summary
     print("\nOverall Test Results:")
